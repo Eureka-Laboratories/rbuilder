@@ -15,13 +15,14 @@ jobs:
         with:
           ref: develop # Checkout your develop branch
 
-      - name: Set Upstream Repository
+      - name: Set Upstream Repository and Perform Merge
         run: |
           git remote add upstream https://github.com/flashbots/rbuilder.git
           git fetch upstream
           git checkout -b daily-merge-$(date +%F) # Create a new daily branch
-          git merge upstream/develop # Merge the upstream develop branch
+          git merge upstream/develop --allow-unrelated-histories # Merge with the upstream develop branch
           git push origin daily-merge-$(date +%F) # Push the new branch to your fork
+
 
       - name: Notify on Success
         if: success()
