@@ -1,0 +1,28 @@
+name: Daily Merge with Upstream Develop
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Runs every day at midnight UTC
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  daily-merge:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Fork Repository
+        uses: actions/checkout@v3
+        with:
+          ref: develop # Checkout your develop branch
+
+      - name: Set Upstream Repository
+        run: |
+          git remote add upstream https://github.com/flashbots/rbuilder.git
+          git fetch upstream
+          git checkout -b daily-merge-$(date +%F) # Create a new daily branch
+          git merge upstream/develop # Merge the upstream develop branch
+          git push origin daily-merge-$(date +%F) # Push the new branch to your fork
+
+      - name: Notify on Success
+        if: success()
+        run: echo "Daily merge branch created successfully."
