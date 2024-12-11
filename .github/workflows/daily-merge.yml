@@ -23,17 +23,17 @@ jobs:
           git config --local user.email "bot@example.com"
           git config --local user.name "GitHub Actions Bot"
 
-      # Add upstream repository and fetch only the develop branch
+      # Add upstream repository if it doesn't exist and fetch the develop branch
       - name: Add Upstream and Fetch Develop Branch
         run: |
-          git remote add upstream https://github.com/flashbots/rbuilder.git
+          if ! git remote | grep -q upstream; then
+            git remote add upstream https://github.com/flashbots/rbuilder.git
+          fi
           git fetch upstream develop
 
       # Create a new daily branch and merge upstream develop into fork's develop
       - name: Create Daily Branch and Merge
         run: |
-          git remote add upstream https://github.com/flashbots/rbuilder.git
-          git fetch upstream develop
           git checkout -b daily-merge-$(date +%F) # Create a new daily branch
           git merge upstream/develop --allow-unrelated-histories -X theirs # Resolve conflicts favoring upstream
-          git push https://${{ secrets.PAT }}@github.com/Eureka-Laboratories/rbuilder.git daily-merge-$(date +%F) # Push the new branch to your fork
+          git push origin daily-merge-$(date +%F) # Push the new branch to your fork
