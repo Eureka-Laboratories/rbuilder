@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: write        # Needed to push changes to the fork repository
-  workflows: write       # Needed to modify workflow files
+  # workflows: write       # Needed to modify workflow files
 
 jobs:
   merge-upstream:
