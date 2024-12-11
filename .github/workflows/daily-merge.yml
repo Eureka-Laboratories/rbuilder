@@ -10,20 +10,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout the fork's develop branch
       - name: Checkout Fork Repository
         uses: actions/checkout@v3
         with:
-          ref: develop # Checkout your develop branch
+          ref: develop
+          fetch-depth: 1 # Fetch only the latest commit to save time
 
+      # Configure Git user for commits
       - name: Configure Git User
         run: |
-          git config --local user.email "bot@eurekalabs.xyz"
+          git config --local user.email "bot@example.com"
           git config --local user.name "GitHub Actions Bot"
 
-      - name: Set Upstream Repository and Perform Merge
+      # Add upstream repository and fetch only the develop branch
+      - name: Add Upstream and Fetch Develop Branch
         run: |
           git remote add upstream https://github.com/flashbots/rbuilder.git
-          git fetch upstream
+          git fetch upstream develop
+
+      # Create a new daily branch and merge upstream develop into fork's develop
+      - name: Create Daily Branch and Merge
+        run: |
           git checkout -b daily-merge-$(date +%F) # Create a new daily branch
-          git merge upstream/develop --allow-unrelated-histories # Merge with upstream develop branch
+          git merge upstream/develop --allow-unrelated-histories -X theirs # Resolve conflicts favoring upstream
           git push origin daily-merge-$(date +%F) # Push the new branch to your fork
