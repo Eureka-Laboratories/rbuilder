@@ -2,38 +2,44 @@ name: Daily Merge with Upstream Develop
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Runs daily at midnight UTC
-  workflow_dispatch: # Allows manual triggering
+    - cron: '0 0 * * *'   # Runs daily at midnight UTC
+  workflow_dispatch:       # Allows manual triggering
+
+permissions:
+  contents: write
 
 jobs:
   daily-merge:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout the fork's develop branch
-      - name: Checkout Fork Repository
+      - name: Checkout Fork Repository (Develop Branch)
         uses: actions/checkout@v3
         with:
           ref: develop
-          fetch-depth: 1 # Fetch only the latest commit to save time
+          fetch-depth: 0  # Fetch all history for proper merging
+          # By default, GITHUB_TOKEN will be used which can now push due to permissions
 
-      # Configure Git user for commits
-      - name: Configure Git User
+      - name: Set Git User
         run: |
           git config --local user.email "bot@example.com"
           git config --local user.name "GitHub Actions Bot"
 
-      # Add upstream repository if it doesn't exist and fetch the develop branch
-      - name: Add Upstream and Fetch Develop Branch
+      - name: Add Upstream Remote and Fetch
         run: |
           if ! git remote | grep -q upstream; then
             git remote add upstream https://github.com/flashbots/rbuilder.git
           fi
           git fetch upstream develop
 
-      # Create a new daily branch and merge upstream develop into fork's develop
-      - name: Create Daily Branch and Merge
+      - name: Merge Upstream Develop into Fork
         run: |
-          git checkout -b daily-merge-$(date +%F) # Create a new daily branch
-          git merge upstream/develop --allow-unrelated-histories -X theirs # Resolve conflicts favoring upstream
-          git push origin daily-merge-$(date +%F) # Push the new branch to your fork
+          # Checkout develop (already on it, but just to be explicit)
+          git checkout develop
+          # Merge upstream changes into develop
+          # If conflicts should favor upstream, add: -X theirs
+          git merge upstream/develop --no-edit
+          
+      - name: Push Changes to Fork
+        run: |
+          git push origin develop
