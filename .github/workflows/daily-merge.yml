@@ -19,7 +19,7 @@ jobs:
         with:
           ref: develop
           fetch-depth: 0  # Fetch all history for reliable merges
-          token: ${{ secrets.PAT_TOKEN }}
+          # token: ${{ secrets.PAT_TOKEN }}
 
       - name: Set Git user configuration
         run: |
