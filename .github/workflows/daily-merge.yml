@@ -32,6 +32,8 @@ jobs:
       # Create a new daily branch and merge upstream develop into fork's develop
       - name: Create Daily Branch and Merge
         run: |
+          git remote add upstream https://github.com/flashbots/rbuilder.git
+          git fetch upstream develop
           git checkout -b daily-merge-$(date +%F) # Create a new daily branch
           git merge upstream/develop --allow-unrelated-histories -X theirs # Resolve conflicts favoring upstream
-          git push origin daily-merge-$(date +%F) # Push the new branch to your fork
+          git push https://${{ secrets.PAT }}@github.com/Eureka-Laboratories/rbuilder.git daily-merge-$(date +%F) # Push the new branch to your fork
