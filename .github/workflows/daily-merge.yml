@@ -20,6 +20,11 @@ jobs:
           git remote add upstream https://github.com/flashbots/rbuilder.git
           git fetch upstream develop
 
+      - name: Set Git user configuration
+        run: |
+          git config user.email "bot@example.com"
+          git config user.name "GitHub Actions Bot"
+
       - name: Merge Upstream Changes
         run: |
           git checkout -b daily-merge-$(date +%F)
