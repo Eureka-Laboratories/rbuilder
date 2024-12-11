@@ -1,45 +1,42 @@
-name: Daily Merge with Upstream Develop
+name: Daily Upstream Develop Merge
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # Runs daily at midnight UTC
-  workflow_dispatch:       # Allows manual triggering
+    - cron: '0 0 * * *'  # Run daily at midnight UTC
+  workflow_dispatch:      # Allow manual triggering
 
 permissions:
-  contents: write
+  contents: write  # Needed to push changes to the fork repository
 
 jobs:
-  daily-merge:
+  merge-upstream:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Fork Repository (Develop Branch)
+      - name: Checkout fork's develop branch
         uses: actions/checkout@v3
         with:
           ref: develop
-          fetch-depth: 0  # Fetch all history for proper merging
-          # By default, GITHUB_TOKEN will be used which can now push due to permissions
+          fetch-depth: 0  # Fetch all history for reliable merges
 
-      - name: Set Git User
+      - name: Set Git user configuration
         run: |
-          git config --local user.email "bot@example.com"
-          git config --local user.name "GitHub Actions Bot"
+          git config user.email "bot@example.com"
+          git config user.name "GitHub Actions Bot"
 
-      - name: Add Upstream Remote and Fetch
+      - name: Add upstream remote and fetch develop
         run: |
           if ! git remote | grep -q upstream; then
             git remote add upstream https://github.com/flashbots/rbuilder.git
           fi
-          git fetch upstream develop
+          # Fetch only the upstream develop branch
+          git fetch upstream develop --depth=1
 
-      - name: Merge Upstream Develop into Fork
+      - name: Create a new branch and merge upstream changes
         run: |
-          # Checkout develop (already on it, but just to be explicit)
-          git checkout develop
-          # Merge upstream changes into develop
-          # If conflicts should favor upstream, add: -X theirs
-          git merge upstream/develop --no-edit
-          
-      - name: Push Changes to Fork
-        run: |
-          git push origin develop
+          MERGE_BRANCH="daily-merge-$(date +%F)"
+          git checkout -b "$MERGE_BRANCH"
+          # Merge upstream develop into the fork's new branch.
+          # Using 'theirs' strategy to favor upstream changes in any conflicts.
+          git merge upstream/develop -X theirs --no-edit
+          git push origin "$MERGE_BRANCH"
