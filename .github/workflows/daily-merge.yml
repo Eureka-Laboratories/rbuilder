@@ -2,22 +2,22 @@ name: Daily Upstream Develop Merge
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Run daily at midnight UTC
-  workflow_dispatch:      # Allow manual triggering
+    - cron: '0 0 * * *'   # Run daily at midnight UTC
+  workflow_dispatch:        # Allow manual triggering
 
 permissions:
-  contents: write  # Needed to push changes to the fork repository
+  contents: write  # Needed so we can push back to this repo
 
 jobs:
   merge-upstream:
     runs-on: ubuntu-latest
-
     steps:
+      # Checkout full history of the fork’s develop branch
       - name: Checkout fork's develop branch
         uses: actions/checkout@v3
         with:
           ref: develop
-          fetch-depth: 0  # Fetch all history for reliable merges
+          fetch-depth: 0  # Important: fetch full history
 
       - name: Set Git user configuration
         run: |
@@ -26,17 +26,19 @@ jobs:
 
       - name: Add upstream remote and fetch develop
         run: |
+          # Add upstream if not present
           if ! git remote | grep -q upstream; then
             git remote add upstream https://github.com/flashbots/rbuilder.git
           fi
-          # Fetch only the upstream develop branch
-          git fetch upstream develop --depth=1
+          # Fetch only the upstream develop branch, with full depth for history
+          git fetch upstream develop --depth=0
 
-      - name: Create a new branch and merge upstream changes
+      - name: Create new merge branch and merge upstream develop
         run: |
           MERGE_BRANCH="daily-merge-$(date +%F)"
           git checkout -b "$MERGE_BRANCH"
-          # Merge upstream develop into the fork's new branch.
-          # Using 'theirs' strategy to favor upstream changes in any conflicts.
-          git merge upstream/develop -X theirs --no-edit
+          # If histories are unrelated, use --allow-unrelated-histories. 
+          # Normally, if this is a true fork, you shouldn't need this. 
+          # If you still get the error, uncomment the `--allow-unrelated-histories` flag.
+          git merge upstream/develop -X theirs --no-edit --allow-unrelated-histories
           git push origin "$MERGE_BRANCH"
