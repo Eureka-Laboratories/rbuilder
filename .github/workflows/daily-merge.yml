@@ -14,12 +14,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout fork repository
-        uses: actions/checkout@v3
-        with:
-          ref: develop
-          fetch-depth: 0  # Fetch all history for reliable merges
-          # token: ${{ secrets.PAT_TOKEN }}
+      # - name: Checkout fork repository
+      #   uses: actions/checkout@v3
+      #   with:
+      #     ref: develop
+      #     fetch-depth: 0  # Fetch all history for reliable merges
+      #     # token: ${{ secrets.PAT_TOKEN }}
 
       - name: Set Git user configuration
         run: |
