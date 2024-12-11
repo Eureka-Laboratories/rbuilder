@@ -6,39 +6,36 @@ on:
   workflow_dispatch:      # Allow manual triggering
 
 permissions:
-  contents: write  # Needed to push changes to the fork
+  contents: write        # Needed to push changes to the fork repository
+  workflows: write       # Needed to modify workflow files
 
 jobs:
   merge-upstream:
     runs-on: ubuntu-latest
+
     steps:
-      # Checkout your fork's develop branch in full depth
       - name: Checkout fork repository
         uses: actions/checkout@v3
         with:
           ref: develop
-          fetch-depth: 0  # Fetch all commits to avoid unrelated history issues
+          fetch-depth: 0  # Fetch all history for reliable merges
+          token: ${{ secrets.PAT_TOKEN }}
 
-      - name: Set git user config
+      - name: Set Git user configuration
         run: |
           git config user.email "bot@example.com"
           git config user.name "GitHub Actions Bot"
 
-      - name: Add upstream remote and fetch only develop branch
+      - name: Add upstream remote and fetch develop
         run: |
-          # Add 'upstream' remote if not present
           if ! git remote | grep -q upstream; then
             git remote add upstream https://github.com/flashbots/rbuilder.git
           fi
-          # Fetch just the 'develop' branch from upstream at minimal depth
           git fetch --no-tags --depth=1 upstream develop
 
-      # Merge upstream develop into a new daily branch on your fork
-      - name: Merge upstream develop into new daily branch
+      - name: Create a new branch and merge upstream develop
         run: |
           MERGE_BRANCH="daily-merge-$(date +%F)"
           git checkout -b "$MERGE_BRANCH"
-          # Use --allow-unrelated-histories if the histories don't share a common base
-          # The -X theirs option favors upstream changes on conflicts
-          git merge upstream/develop --allow-unrelated-histories -X theirs --no-edit
+          git merge upstream/develop -X theirs --no-edit
           git push origin "$MERGE_BRANCH"
