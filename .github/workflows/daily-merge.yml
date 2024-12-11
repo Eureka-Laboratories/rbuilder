@@ -1,41 +1,32 @@
-name: Daily Upstream Develop Merge
+name: Sync with Upstream
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Run daily at midnight UTC
-  workflow_dispatch:      # Allow manual triggering
-
-permissions:
-  contents: write        # Needed to push changes to the fork repository
-  # workflows: write       # Needed to modify workflow files
+    - cron: '0 0 * * *' # Runs daily at midnight
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  merge-upstream:
+  sync:
     runs-on: ubuntu-latest
-
     steps:
-      # - name: Checkout fork repository
-      #   uses: actions/checkout@v3
-      #   with:
-      #     ref: develop
-      #     fetch-depth: 0  # Fetch all history for reliable merges
-      #     # token: ${{ secrets.PAT_TOKEN }}
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+        with:
+          ref: develop
+          fetch-depth: 0
 
-      - name: Set Git user configuration
+      - name: Set Upstream Repository
         run: |
-          git config user.email "bot@example.com"
-          git config user.name "GitHub Actions Bot"
+          git remote add upstream https://github.com/flashbots/rbuilder.git
+          git fetch upstream develop
 
-      - name: Add upstream remote and fetch develop
+      - name: Merge Upstream Changes
         run: |
-          if ! git remote | grep -q upstream; then
-            git remote add upstream https://github.com/flashbots/rbuilder.git
-          fi
-          git fetch --no-tags --depth=1 upstream develop
-
-      - name: Create a new branch and merge upstream develop
-        run: |
-          MERGE_BRANCH="daily-merge-$(date +%F)"
-          git checkout -b "$MERGE_BRANCH"
+          git checkout -b daily-merge-$(date +%F)
           git merge upstream/develop -X theirs --no-edit
-          git push origin "$MERGE_BRANCH"
+
+      - name: Push Changes
+        run: |
+          git push origin daily-merge-$(date +%F)
+        # env:
+        #   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
