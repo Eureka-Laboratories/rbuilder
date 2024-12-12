@@ -11,6 +11,6 @@ jobs:
     steps:
       - uses: tgymnich/fork-sync@v1.8
         with:
-          owner: flashbots
+          owner: flashbots/rbuilder
           base: develop
           head: develop
