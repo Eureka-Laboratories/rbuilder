@@ -1,40 +1,16 @@
-name: Sync with Upstream
+name: Sync Fork
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Runs daily at midnight
-  workflow_dispatch: # Allows manual triggering
-
-permissions:
-  contents: write
+    - cron: '0 0 * * *'  # Runs every hour
+  workflow_dispatch:  # Allows manual triggering
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v2
+      - uses: tgymnich/fork-sync@v1.8
         with:
-          ref: develop
-          fetch-depth: 0
-
-      - name: Set Upstream Repository
-        run: |
-          git remote add upstream https://github.com/flashbots/rbuilder.git
-          git fetch upstream develop
-
-      - name: Set Git user configuration
-        run: |
-          git config user.email "bot@example.com"
-          git config user.name "GitHub Actions Bot"
-
-      - name: Merge Upstream Changes
-        run: |
-          git checkout -b daily-merge-$(date +%F)
-          git merge upstream/develop -X theirs --no-edit
-
-      - name: Push Changes
-        run: |
-          git push origin daily-merge-$(date +%F)
-        # env:
-        #   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          owner: ORIGINAL_OWNER
+          base: develop
+          head: develop
