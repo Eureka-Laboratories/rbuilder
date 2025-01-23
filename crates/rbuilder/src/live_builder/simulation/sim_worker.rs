@@ -92,7 +92,10 @@ pub fn run_sim_worker<P>(
                                 .unwrap_or_default();
                             true
                         }
-                        OrderSimResult::Failed(_) => false,
+                        OrderSimResult::Failed(e) => {
+                            error!(?e, "Error while simulating order");
+                            false
+                        },
                     };
                     telemetry::inc_simulated_orders(sim_ok);
                     telemetry::inc_simulation_gas_used(sim_result.gas_used);

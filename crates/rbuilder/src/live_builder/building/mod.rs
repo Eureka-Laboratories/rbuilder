@@ -1,7 +1,7 @@
 mod unfinished_block_building_sink_muxer;
 
 use std::{cell::RefCell, rc::Rc, sync::Arc, thread, time::Duration};
-
+use std::sync::Mutex;
 use crate::{
     building::{
         builders::{
@@ -32,7 +32,7 @@ use super::{
 pub struct BlockBuildingPool<P> {
     provider: P,
     builders: Vec<Arc<dyn BlockBuildingAlgorithm<P>>>,
-    sink_factory: Box<dyn UnfinishedBlockBuildingSinkFactory>,
+    sink_factory: Arc<Mutex<dyn UnfinishedBlockBuildingSinkFactory>>,
     orderpool_subscriber: order_input::OrderPoolSubscriber,
     order_simulation_pool: OrderSimulationPool<P>,
     run_sparse_trie_prefetcher: bool,
@@ -46,7 +46,7 @@ where
     pub fn new(
         provider: P,
         builders: Vec<Arc<dyn BlockBuildingAlgorithm<P>>>,
-        sink_factory: Box<dyn UnfinishedBlockBuildingSinkFactory>,
+        sink_factory: Arc<Mutex<dyn UnfinishedBlockBuildingSinkFactory>>,
         orderpool_subscriber: order_input::OrderPoolSubscriber,
         order_simulation_pool: OrderSimulationPool<P>,
         run_sparse_trie_prefetcher: bool,
@@ -70,6 +70,7 @@ where
         block_ctx: BlockBuildingContext,
         global_cancellation: CancellationToken,
         max_time_to_build: Duration,
+        span_name: Option<&str>
     ) {
         let block_cancellation = global_cancellation.child_token();
 
@@ -92,6 +93,7 @@ where
             block_ctx.clone(),
             orders_for_block,
             block_cancellation.clone(),
+            span_name
         );
         self.start_building_job(
             block_ctx,
@@ -109,7 +111,7 @@ where
         input: SlotOrderSimResults,
         cancel: CancellationToken,
     ) {
-        let builder_sink = self.sink_factory.create_sink(slot_data, cancel.clone());
+        let builder_sink = self.sink_factory.lock().unwrap().create_sink(slot_data, cancel.clone());
         let (broadcast_input, _) = broadcast::channel(10_000);
         let muxer = Arc::new(UnfinishedBlockBuildingSinkMuxer::new(builder_sink));
 

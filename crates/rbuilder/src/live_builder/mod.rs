@@ -4,11 +4,14 @@ pub mod block_output;
 pub mod building;
 pub mod cli;
 pub mod config;
+mod eureka;
 pub mod order_input;
 pub mod payload_events;
 pub mod simulation;
 pub mod watchdog;
 
+use crate::live_builder::order_input::orderpool::OrderPool;
+use crate::live_builder::order_input::OrderPoolSubscriber;
 use crate::{
     building::{
         builders::{BlockBuildingAlgorithm, UnfinishedBlockBuildingSinkFactory},
@@ -40,6 +43,7 @@ use reth::transaction_pool::{
 };
 use reth_chainspec::ChainSpec;
 use reth_primitives::TransactionSignedEcRecovered;
+use std::sync::Mutex;
 use std::{cmp::min, fmt::Debug, path::PathBuf, sync::Arc, time::Duration};
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
@@ -114,13 +118,15 @@ where
 
     pub global_cancellation: CancellationToken,
 
-    pub sink_factory: Box<dyn UnfinishedBlockBuildingSinkFactory>,
+    pub sink_factory: Arc<Mutex<dyn UnfinishedBlockBuildingSinkFactory>>,
     pub builders: Vec<Arc<dyn BlockBuildingAlgorithm<P>>>,
     pub extra_rpc: RpcModule<()>,
 
     /// Notify rbuilder of new [`ReplaceableOrderPoolCommand`] flow via this channel.
     pub orderpool_sender: mpsc::Sender<ReplaceableOrderPoolCommand>,
     pub orderpool_receiver: mpsc::Receiver<ReplaceableOrderPoolCommand>,
+    pub priority_orderpool_sender: mpsc::Sender<ReplaceableOrderPoolCommand>,
+    pub priority_orderpool_receiver: mpsc::Receiver<ReplaceableOrderPoolCommand>,
     pub sbundle_merger_selected_signers: Arc<Vec<Address>>,
 }
 
@@ -159,6 +165,48 @@ where
 
         let (header_sender, header_receiver) = mpsc::channel(CLEAN_TASKS_CHANNEL_SIZE);
 
+        let priority_orderpool_subscriber = {
+            let ws_server = eureka::ws_server::start_ws_server(
+                self.priority_orderpool_sender,
+                self.global_cancellation.clone(),
+            )
+            .await?;
+            inner_jobs_handles.push(ws_server);
+            let orderpool = Arc::new(Mutex::new(OrderPool::new()));
+            let subscriber = OrderPoolSubscriber {
+                orderpool: orderpool.clone(),
+            };
+
+            let global_cancel = self.global_cancellation.clone();
+            let handle = tokio::spawn(async move {
+                info!("Priority OrderJobs: started");
+
+                let mut new_commands = Vec::new();
+                let mut order_receiver: mpsc::Receiver<ReplaceableOrderPoolCommand> =
+                    self.priority_orderpool_receiver;
+
+                loop {
+                    tokio::select! {
+                        _ = global_cancel.cancelled() => { break; },
+                        n = order_receiver.recv_many(&mut new_commands, 100) => {
+                            if n == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    {
+                        let orderpool = orderpool.lock();
+                        orderpool.unwrap().process_commands(new_commands.clone());
+                    }
+
+                    new_commands.clear();
+                }
+            });
+            inner_jobs_handles.push(handle);
+
+            subscriber
+        };
+
         let orderpool_subscriber = {
             let (handle, sub) = start_orderpool_jobs(
                 self.order_input_config,
@@ -174,6 +222,12 @@ where
             sub
         };
 
+        let priority_oder_simulation_pool = OrderSimulationPool::new(
+            self.provider.clone(),
+            self.simulation_threads,
+            self.global_cancellation.clone(),
+        );
+
         let order_simulation_pool = {
             OrderSimulationPool::new(
                 self.provider.clone(),
@@ -182,10 +236,20 @@ where
             )
         };
 
+        let mut priority_builder_pool = BlockBuildingPool::new(
+            self.provider.clone(),
+            self.builders.clone(),
+            self.sink_factory.clone(),
+            priority_orderpool_subscriber,
+            priority_oder_simulation_pool,
+            self.run_sparse_trie_prefetcher,
+            self.sbundle_merger_selected_signers.clone(),
+        );
+
         let mut builder_pool = BlockBuildingPool::new(
             self.provider.clone(),
             self.builders,
-            self.sink_factory,
+            self.sink_factory.clone(),
             orderpool_subscriber,
             order_simulation_pool,
             self.run_sparse_trie_prefetcher,
@@ -295,12 +359,12 @@ where
 
         info!("Builder shutting down");
         self.global_cancellation.cancel();
-        for handle in inner_jobs_handles {
-            handle
-                .await
-                .map_err(|err| warn!("Job handle await error: {:?}", err))
-                .unwrap_or_default();
-        }
+        // for handle in inner_jobs_handles {
+        //     handle
+        //         .await
+        //         .map_err(|err| warn!("Job handle await error: {:?}", err))
+        //         .unwrap_or_default();
+        // }
         Ok(())
     }
 

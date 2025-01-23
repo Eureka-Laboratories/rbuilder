@@ -16,19 +16,18 @@ use crate::provider::StateProviderFactory;
 use crate::telemetry::{set_current_block, set_ordepool_count};
 use alloy_consensus::Header;
 use jsonrpsee::RpcModule;
-use parking_lot::Mutex;
 use std::{net::Ipv4Addr, path::PathBuf, sync::Arc, time::Duration};
 use std::{path::Path, time::Instant};
+use std::sync::Mutex;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
-
 use super::base_config::BaseConfig;
 
 /// Thread safe access to OrderPool to get orderflow
 #[derive(Debug)]
 pub struct OrderPoolSubscriber {
-    orderpool: Arc<Mutex<OrderPool>>,
+    pub orderpool: Arc<Mutex<OrderPool>>,
 }
 
 impl OrderPoolSubscriber {
@@ -37,14 +36,14 @@ impl OrderPoolSubscriber {
         block_number: u64,
         sink: Box<dyn ReplaceableOrderSink>,
     ) -> OrderPoolSubscriptionId {
-        self.orderpool.lock().add_sink(block_number, sink)
+        self.orderpool.lock().unwrap().add_sink(block_number, sink)
     }
 
     pub fn remove_sink(
         &self,
         id: &OrderPoolSubscriptionId,
     ) -> Option<Box<dyn ReplaceableOrderSink>> {
-        self.orderpool.lock().remove_sink(id)
+        self.orderpool.lock().unwrap().remove_sink(id)
     }
 
     /// Returned AutoRemovingOrderPoolSubscriptionId will call remove when dropped
@@ -70,7 +69,7 @@ pub struct AutoRemovingOrderPoolSubscriptionId {
 
 impl Drop for AutoRemovingOrderPoolSubscriptionId {
     fn drop(&mut self) {
-        self.orderpool.lock().remove_sink(&self.id);
+        self.orderpool.lock().unwrap().remove_sink(&self.id);
     }
 }
 
@@ -221,7 +220,7 @@ where
     .await?;
 
     let mut handles = vec![clean_job, rpc_server];
-
+    
     if config.ipc_path.is_some() {
         info!("IPC path configured, starting txpool subscription");
         let txpool_fetcher = txpool_fetcher::subscribe_to_txpool_with_blobs(
@@ -284,8 +283,8 @@ where
             }
 
             {
-                let mut orderpool = orderpool.lock();
-                orderpool.process_commands(new_commands.clone());
+                let orderpool = orderpool.lock();
+                orderpool.unwrap().process_commands(new_commands.clone());
             }
             new_commands.clear();
         }
@@ -343,7 +342,7 @@ where
                             }
                         };
 
-                        let mut orderpool = orderpool.lock();
+                        let mut orderpool = orderpool.lock().unwrap();
                         let start = Instant::now();
 
                         orderpool.head_updated(block_number, &state);
