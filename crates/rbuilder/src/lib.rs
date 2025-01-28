@@ -8,5 +8,6 @@ pub mod primitives;
 pub mod provider;
 pub mod roothash;
 pub mod telemetry;
+pub mod toba;
 pub mod utils;
 pub mod validation_api_client;

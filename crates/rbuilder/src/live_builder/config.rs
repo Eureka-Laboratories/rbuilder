@@ -68,7 +68,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use std::sync::Mutex;
 use tracing::{info, warn};
 use url::Url;
 
@@ -395,7 +394,7 @@ impl LiveBuilderConfig for Config {
         let bidding_service: Box<dyn BiddingService> =
             Box::new(TrueBlockValueBiddingService::new(&wallet_history));
 
-        let sink_factory = Arc::new(Mutex::new(BlockSealingBidderFactory::new(
+        let sink_factory = Box::new(BlockSealingBidderFactory::new(
             bidding_service,
             sink_sealed_factory,
             Arc::new(NullBidValueSource {}),

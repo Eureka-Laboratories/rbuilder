@@ -4,6 +4,8 @@ pub mod mock_block_building_helper;
 pub mod ordering_builder;
 pub mod parallel_builder;
 
+use super::{simulated_order_command_to_sink, PrioritizedOrderStore};
+use crate::toba::auction_manager::TopBlockAuctionManager;
 use crate::{
     building::{BlockBuildingContext, BuiltBlockTrace, SimulatedOrderSink, Sorting},
     live_builder::{payload_events::MevBoostSlotData, simulation::SimulatedOrderCommand},
@@ -25,8 +27,6 @@ use tokio::sync::{
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::{simulated_order_command_to_sink, PrioritizedOrderStore};
-
 /// Block we built
 #[derive(Debug, Clone)]
 pub struct Block {
@@ -47,6 +47,7 @@ pub struct LiveBuilderInput<P> {
     pub sink: Arc<dyn UnfinishedBlockBuildingSink>,
     pub builder_name: String,
     pub cancel: CancellationToken,
+    pub top_block_auction_manager: Arc<TopBlockAuctionManager>,
 }
 
 /// Struct that helps reading new orders/cancellations
@@ -219,6 +220,8 @@ pub struct BlockBuildingAlgorithmInput<P> {
     /// output for the blocks
     pub sink: Arc<dyn UnfinishedBlockBuildingSink>,
     pub cancel: CancellationToken,
+
+    pub top_block_auction_manager: Arc<TopBlockAuctionManager>,
 }
 
 /// Algorithm to build blocks

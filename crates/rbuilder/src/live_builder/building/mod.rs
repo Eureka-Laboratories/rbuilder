@@ -1,7 +1,13 @@
 mod unfinished_block_building_sink_muxer;
 
-use std::{cell::RefCell, rc::Rc, sync::Arc, thread, time::Duration};
-use std::sync::Mutex;
+use super::{
+    order_input::{
+        self, order_replacement_manager::OrderReplacementManager, orderpool::OrdersForBlock,
+    },
+    payload_events,
+    simulation::{OrderSimulationPool, SimulatedOrderCommand},
+};
+use crate::toba::auction_manager::TopBlockAuctionManager;
 use crate::{
     building::{
         builders::{
@@ -15,24 +21,17 @@ use crate::{
     provider::StateProviderFactory,
 };
 use revm_primitives::Address;
+use std::{cell::RefCell, rc::Rc, sync::Arc, thread, time::Duration};
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace};
 use unfinished_block_building_sink_muxer::UnfinishedBlockBuildingSinkMuxer;
 
-use super::{
-    order_input::{
-        self, order_replacement_manager::OrderReplacementManager, orderpool::OrdersForBlock,
-    },
-    payload_events,
-    simulation::{OrderSimulationPool, SimulatedOrderCommand},
-};
-
 #[derive(Debug)]
 pub struct BlockBuildingPool<P> {
     provider: P,
     builders: Vec<Arc<dyn BlockBuildingAlgorithm<P>>>,
-    sink_factory: Arc<Mutex<dyn UnfinishedBlockBuildingSinkFactory>>,
+    sink_factory: Box<dyn UnfinishedBlockBuildingSinkFactory>,
     orderpool_subscriber: order_input::OrderPoolSubscriber,
     order_simulation_pool: OrderSimulationPool<P>,
     run_sparse_trie_prefetcher: bool,
@@ -46,7 +45,7 @@ where
     pub fn new(
         provider: P,
         builders: Vec<Arc<dyn BlockBuildingAlgorithm<P>>>,
-        sink_factory: Arc<Mutex<dyn UnfinishedBlockBuildingSinkFactory>>,
+        sink_factory: Box<dyn UnfinishedBlockBuildingSinkFactory>,
         orderpool_subscriber: order_input::OrderPoolSubscriber,
         order_simulation_pool: OrderSimulationPool<P>,
         run_sparse_trie_prefetcher: bool,
@@ -70,7 +69,7 @@ where
         block_ctx: BlockBuildingContext,
         global_cancellation: CancellationToken,
         max_time_to_build: Duration,
-        span_name: Option<&str>
+        top_of_block_auction_manager: Arc<TopBlockAuctionManager>,
     ) {
         let block_cancellation = global_cancellation.child_token();
 
@@ -93,13 +92,13 @@ where
             block_ctx.clone(),
             orders_for_block,
             block_cancellation.clone(),
-            span_name
         );
         self.start_building_job(
             block_ctx,
             payload,
             simulations_for_block,
             block_cancellation,
+            top_of_block_auction_manager,
         );
     }
 
@@ -110,8 +109,9 @@ where
         slot_data: MevBoostSlotData,
         input: SlotOrderSimResults,
         cancel: CancellationToken,
+        top_block_auction_manager: Arc<TopBlockAuctionManager>,
     ) {
-        let builder_sink = self.sink_factory.lock().unwrap().create_sink(slot_data, cancel.clone());
+        let builder_sink = self.sink_factory.create_sink(slot_data, cancel.clone());
         let (broadcast_input, _) = broadcast::channel(10_000);
         let muxer = Arc::new(UnfinishedBlockBuildingSinkMuxer::new(builder_sink));
 
@@ -126,6 +126,7 @@ where
                 input: broadcast_input.subscribe(),
                 sink: muxer.clone(),
                 cancel: cancel.clone(),
+                top_block_auction_manager: top_block_auction_manager.clone(),
             };
             let builder = builder.clone();
             tokio::task::spawn_blocking(move || {

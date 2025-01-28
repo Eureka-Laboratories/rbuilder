@@ -391,6 +391,7 @@ where
             sink: input.sink,
             builder_name: self.name.clone(),
             cancel: input.cancel,
+            top_block_auction_manager: input.top_block_auction_manager,
         };
         run_parallel_builder(live_input, &self.config);
     }

@@ -11,18 +11,18 @@ use self::{
     orderpool::{OrderPool, OrderPoolSubscriptionId},
     replaceable_order_sink::ReplaceableOrderSink,
 };
+use super::base_config::BaseConfig;
 use crate::primitives::{serialize::CancelShareBundle, BundleReplacementData, Order};
 use crate::provider::StateProviderFactory;
 use crate::telemetry::{set_current_block, set_ordepool_count};
 use alloy_consensus::Header;
 use jsonrpsee::RpcModule;
+use std::sync::Mutex;
 use std::{net::Ipv4Addr, path::PathBuf, sync::Arc, time::Duration};
 use std::{path::Path, time::Instant};
-use std::sync::Mutex;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
-use super::base_config::BaseConfig;
 
 /// Thread safe access to OrderPool to get orderflow
 #[derive(Debug)]
@@ -220,7 +220,7 @@ where
     .await?;
 
     let mut handles = vec![clean_job, rpc_server];
-    
+
     if config.ipc_path.is_some() {
         info!("IPC path configured, starting txpool subscription");
         let txpool_fetcher = txpool_fetcher::subscribe_to_txpool_with_blobs(

@@ -33,7 +33,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 use url::Url;
@@ -211,7 +210,7 @@ impl BaseConfig {
     pub async fn create_builder_with_provider_factory<P, SlotSourceType>(
         &self,
         cancellation_token: tokio_util::sync::CancellationToken,
-        sink_factory:  Arc<Mutex<dyn UnfinishedBlockBuildingSinkFactory>>,
+        sink_factory: Box<dyn UnfinishedBlockBuildingSinkFactory>,
         slot_source: SlotSourceType,
         provider: P,
         blocklist_provider: Arc<dyn BlockListProvider>,
@@ -222,8 +221,6 @@ impl BaseConfig {
     {
         let order_input_config = OrderInputConfig::from_config(self)?;
         let (orderpool_sender, orderpool_receiver) =
-            mpsc::channel(order_input_config.input_channel_buffer_size);
-        let (priority_orderpool_sender, priority_orderpool_receiver) =
             mpsc::channel(order_input_config.input_channel_buffer_size);
         Ok(LiveBuilder::<P, SlotSourceType> {
             watchdog_timeout: self.watchdog_timeout(),
@@ -248,8 +245,6 @@ impl BaseConfig {
 
             orderpool_sender,
             orderpool_receiver,
-            priority_orderpool_sender,
-            priority_orderpool_receiver,
             sbundle_merger_selected_signers: Arc::new(self.sbundle_mergeable_signers()),
         })
     }

@@ -27,7 +27,7 @@ use reth_primitives::SealedBlock;
 use std::sync::Arc;
 use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, event, info_span, trace, warn, Instrument, Level};
+use tracing::{error, event, info, info_span, trace, warn, Instrument, Level};
 
 use super::{
     bid_observer::BidObserver,
@@ -238,7 +238,7 @@ async fn run_submit_to_relays_job(
             fill_time_ms = block.trace.fill_time.as_millis(),
             finalize_time_ms = block.trace.finalize_time.as_millis(),
         );
-        debug!(
+        info!(
             parent: &submission_span,
             "Submitting bid",
         );

@@ -104,7 +104,6 @@ where
         ctx: BlockBuildingContext,
         input: OrdersForBlock,
         block_cancellation: CancellationToken,
-        job_name: Option<&str>
     ) -> SlotOrderSimResults {
         let (slot_sim_results_sender, slot_sim_results_receiver) = mpsc::channel(10_000);
 
@@ -120,7 +119,7 @@ where
         let provider = self.provider.clone();
         let current_contexts = Arc::clone(&self.current_contexts);
         let block_context: BlockContextId = gen_uid();
-        let span = info_span!("sim_ctx", block = ctx.block_env.number.to::<u64>(), parent = ?ctx.attributes.parent, job_name = job_name.unwrap_or("sim") );
+        let span = info_span!("sim_ctx", block = ctx.block_env.number.to::<u64>(), parent = ?ctx.attributes.parent);
 
         let handle = tokio::spawn(
             async move {

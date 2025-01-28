@@ -5,6 +5,15 @@
 //! The described algorithm is ran continuously adding new SimulatedOrders (they arrive on real time!) on each iteration until we run out of time (slot ends).
 //! Sorting criteria are described on [`Sorting`].
 //! For some more details see [`OrderingBuilderConfig`]
+use super::{
+    block_building_helper::{BiddableUnfinishedBlock, BlockBuildingHelperFromProvider},
+    handle_building_error, BacktestSimulateBlockInput, Block, BlockBuildingAlgorithm,
+    BlockBuildingAlgorithmInput,
+};
+use crate::building::sim::OrderSimResult::Success;
+use crate::building::{simulate_order, BlockState};
+use crate::primitives::{MempoolTx, Order, SimulatedOrder};
+use crate::toba::auction_manager::TopBlockAuctionManager;
 use crate::{
     building::{
         block_orders_from_sim_orders,
@@ -18,17 +27,13 @@ use crate::{
     telemetry::mark_builder_considers_order,
 };
 use ahash::{HashMap, HashSet};
+use reth::providers::StateProvider;
 use reth::revm::cached::CachedReads;
 use serde::Deserialize;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info_span, trace};
-
-use super::{
-    block_building_helper::{BiddableUnfinishedBlock, BlockBuildingHelperFromProvider},
-    handle_building_error, BacktestSimulateBlockInput, Block, BlockBuildingAlgorithm,
-    BlockBuildingAlgorithmInput,
-};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -38,7 +43,7 @@ pub struct OrderingBuilderConfig {
     /// the execution of the bundle/sbundle
     pub discard_txs: bool,
     pub sorting: Sorting,
-    /// Only when a tx fails because the profit was worst than expected: Number of time an order can fail during a single block building iteration.
+    /// Only when a tx fails because the profit was worse than expected: Number of time an order can fail during a single block building iteration.
     /// When thi happens it gets reinserted in the PrioritizedOrderStore with the new simulated profit (the one that failed).
     pub failed_order_retries: usize,
     /// if a tx fails in a block building iteration it's dropped so next iterations will not use it.
@@ -79,6 +84,12 @@ where
     // this is a hack to mark used orders until built block trace is implemented as a sane thing
     let mut removed_orders = Vec::new();
     let mut use_suggested_fee_recipient_as_coinbase = config.coinbase_payment;
+
+    let top_block_auction_manager = input.top_block_auction_manager;
+    let _ = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(top_block_auction_manager.clear_candidate())
+    });
+
     'building: loop {
         if input.cancel.is_cancelled() {
             break 'building;
@@ -96,8 +107,14 @@ where
             }
         }
 
+        let toba = try_get_latest_toba_candidate(
+            top_block_auction_manager.clone(),
+            builder.provider.clone(),
+            builder.ctx.clone(),
+        );
         let orders = order_intake_consumer.current_block_orders();
         match builder.build_block(
+            toba,
             orders,
             use_suggested_fee_recipient_as_coinbase
                 && input.sink.can_use_suggested_fee_recipient_as_coinbase(),
@@ -124,6 +141,34 @@ where
     }
 }
 
+fn try_get_latest_toba_candidate<P: StateProviderFactory>(
+    top_block_auction_manager: Arc<TopBlockAuctionManager>,
+    provider: P,
+    ctx: BlockBuildingContext,
+) -> Option<SimulatedOrder> {
+    if let Some(top_tx) = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current()
+            .block_on(top_block_auction_manager.get_current_candidate())
+    }) {
+        // Perform a lightweight simulation of the transaction in isolation
+        let order = Order::Tx(MempoolTx::new(top_tx.transaction));
+        let state_for_sim = Arc::<dyn StateProvider>::from(
+            provider
+                .history_by_block_hash(ctx.attributes.parent)
+                .unwrap(),
+        );
+        let mut block_state = BlockState::new_arc(state_for_sim);
+        let sim_result = simulate_order(vec![], order, &ctx, &mut block_state).unwrap();
+
+        match sim_result.result {
+            Success(sim_order, ..) => Some(sim_order),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
 pub fn backtest_simulate_block<P>(
     ordering_config: OrderingBuilderConfig,
     input: BacktestSimulateBlockInput<'_, P>,
@@ -145,6 +190,7 @@ where
     )
     .with_cached_reads(input.cached_reads.unwrap_or_default());
     let block_builder = builder.build_block(
+        None,
         block_orders,
         use_suggested_fee_recipient_as_coinbase,
         CancellationToken::new(),
@@ -214,6 +260,7 @@ where
     /// !use_suggested_fee_recipient_as_coinbase: all the mev profit goes to the builder and at the end of the block we pay to the suggested_fee_recipient.
     pub fn build_block(
         &mut self,
+        maybe_toba: Option<SimulatedOrder>,
         block_orders: PrioritizedOrderStore,
         use_suggested_fee_recipient_as_coinbase: bool,
         cancel_block: CancellationToken,
@@ -242,7 +289,12 @@ where
             cancel_block,
         )?;
 
-        self.fill_orders(&mut block_building_helper, block_orders, build_start)?;
+        self.fill_orders(
+            &mut block_building_helper,
+            maybe_toba,
+            block_orders,
+            build_start,
+        )?;
         block_building_helper.set_trace_fill_time(build_start.elapsed());
         self.cached_reads = Some(block_building_helper.clone_cached_reads());
         Ok(Box::new(block_building_helper))
@@ -251,12 +303,22 @@ where
     fn fill_orders(
         &mut self,
         block_building_helper: &mut dyn BlockBuildingHelper,
+        mut maybe_toba: Option<SimulatedOrder>,
         mut block_orders: PrioritizedOrderStore,
         build_start: Instant,
     ) -> eyre::Result<()> {
         let mut order_attempts: HashMap<OrderId, usize> = HashMap::default();
         // @Perf when gas left is too low we should break.
+
+        let mut sim_orders = Vec::new();
+        if let Some(toba) = maybe_toba.take() {
+            sim_orders.push(toba);
+        }
         while let Some(sim_order) = block_orders.pop_order() {
+            sim_orders.push(sim_order);
+        }
+
+        for sim_order in sim_orders {
             if let Some(deadline) = self.config.build_duration_deadline() {
                 if build_start.elapsed() > deadline {
                     break;
@@ -348,6 +410,7 @@ where
             sink: input.sink,
             builder_name: self.name.clone(),
             cancel: input.cancel,
+            top_block_auction_manager: input.top_block_auction_manager.clone(),
         };
         run_ordering_builder(live_input, &self.config);
     }

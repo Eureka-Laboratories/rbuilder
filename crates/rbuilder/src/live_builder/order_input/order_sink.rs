@@ -56,7 +56,7 @@ pub enum OrderPoolCommand {
 }
 
 /// Adapts push Order flow to pull flow.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OrderSender2OrderSink {
     sender: mpsc::UnboundedSender<OrderPoolCommand>,
 }
