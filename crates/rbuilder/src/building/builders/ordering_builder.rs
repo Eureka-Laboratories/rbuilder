@@ -90,12 +90,13 @@ where
         tokio::runtime::Handle::current().block_on(top_block_auction_manager.clear_candidate())
     });
 
+    let is_blocking = false; // TODO make this configurable or find a way to race between TOBA and regular block orders in a sync way
     'building: loop {
         if input.cancel.is_cancelled() {
             break 'building;
         }
-
-        match order_intake_consumer.blocking_consume_next_batch() {
+        
+        match order_intake_consumer.blocking_consume_next_batch(is_blocking) {
             Ok(ok) => {
                 if !ok {
                     break 'building;
