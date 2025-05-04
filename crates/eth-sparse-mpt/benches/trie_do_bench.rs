@@ -1,7 +1,6 @@
 use alloy_primitives::{keccak256, Bytes, B256, U256};
 use criterion::{criterion_group, criterion_main, Criterion};
 use eth_sparse_mpt::{data_oriented::DODiffTrie, sparse_mpt::DiffTrie};
-use reth_trie::Nibbles;
 
 fn prepare_key_value_data(n: usize) -> (Vec<Bytes>, Vec<Bytes>) {
     let mut keys = Vec::with_capacity(n);

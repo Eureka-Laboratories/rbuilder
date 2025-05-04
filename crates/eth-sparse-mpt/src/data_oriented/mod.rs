@@ -117,14 +117,12 @@ impl DODiffTrie {
         let mut path_walked = 0;
 
         loop {
-            let node = self
-                .nodes
-                .get(current_node)
-                .expect("node not found")
-                .clone();
             self.hashed_nodes[current_node] = false;
+            let node = self.nodes.get(current_node).expect("node not found");
             match node {
                 DiffTrieNode::Branch { children } => {
+                    let children = *children;
+
                     let n = ins_key[path_walked] as usize;
                     path_walked += 1;
                     if self.branch_node_children[children][n] != 0 {
@@ -141,6 +139,9 @@ impl DODiffTrie {
                     }
                 }
                 DiffTrieNode::Extension { key, next_node } => {
+                    let key = key.clone();
+                    let next_node = *next_node;
+
                     if ins_key[path_walked..].starts_with(&self.keys[key.clone()]) {
                         path_walked += key.len();
                         current_node = next_node;
@@ -191,7 +192,10 @@ impl DODiffTrie {
                     self.branch_node_children[branch_children][n2 as usize] = branch_child;
                 }
                 DiffTrieNode::Leaf { key, value } => {
-                    if &self.keys[key.clone()] == &ins_key[path_walked..] {
+                    let key = key.clone();
+                    let value = value.clone();
+
+                    if self.keys[key.clone()] == ins_key[path_walked..] {
                         // update leaf in place
                         let new_value = self.copy_or_overwrite_value(value, insert_value);
                         self.nodes[current_node] = DiffTrieNode::Leaf {
@@ -244,7 +248,7 @@ impl DODiffTrie {
                 DiffTrieNode::Null => {
                     let new_leaf_key = self.insert_key(&ins_key[path_walked..]);
                     let new_leaf_value = self.copy_value(insert_value);
-                    self.nodes[current_node as usize] = DiffTrieNode::Leaf {
+                    self.nodes[current_node] = DiffTrieNode::Leaf {
                         key: new_leaf_key,
                         value: new_leaf_value,
                     };
