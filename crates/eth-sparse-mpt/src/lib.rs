@@ -8,6 +8,7 @@
 #![allow(clippy::len_without_is_empty)]
 #![allow(clippy::needless_range_loop)]
 
+pub mod data_oriented;
 pub mod reth_sparse_trie;
 pub mod sparse_mpt;
 #[cfg(any(test, feature = "benchmark-utils"))]

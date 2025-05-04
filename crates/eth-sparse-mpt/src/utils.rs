@@ -44,6 +44,7 @@ pub fn strip_first_nibble_mut(p: &mut Nibbles) -> u8 {
     nibble
 }
 
+#[inline]
 pub fn extract_prefix_and_suffix(p1: &Nibbles, p2: &Nibbles) -> (Nibbles, Nibbles, Nibbles) {
     let prefix_len = p1.common_prefix_length(p2);
     let prefix = Nibbles::from_nibbles_unchecked(&p1[..prefix_len]);
