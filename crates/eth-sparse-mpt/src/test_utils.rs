@@ -35,6 +35,10 @@ pub fn reference_trie_hash(data: &[(Bytes, Bytes)]) -> B256 {
     triehash::trie_root::<KeccakHasher, _, _, _>(data.to_vec())
 }
 
+pub fn reference_trie_hash_vec(data: &[(Vec<u8>, Vec<u8>)]) -> B256 {
+    triehash::trie_root::<KeccakHasher, _, _, _>(data.to_vec())
+}
+
 pub fn get_test_multiproofs() -> Vec<MultiProof> {
     let files = [
         "./test_data/multiproof_0.json.gz",

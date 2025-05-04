@@ -2048,7 +2048,7 @@ dependencies = [
  "bitflags 2.9.0",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.11.0",
  "lazy_static",
  "lazycell",
  "log",
@@ -3937,6 +3937,7 @@ dependencies = [
  "alloy-primitives 1.0.0",
  "alloy-rlp",
  "alloy-trie 0.8.1",
+ "arrayvec",
  "criterion 0.4.0",
  "eth-sparse-mpt",
  "eyre",
@@ -8646,7 +8647,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.100",

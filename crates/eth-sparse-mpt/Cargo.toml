@@ -42,6 +42,7 @@ hash-db = { version = "0.15.2", optional = true }
 triehash = { version = "0.8.4", optional = true }
 flate2 = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true}
+arrayvec = "0.7.6"
 
 [features]
 benchmark-utils = ["dep:hash-db", "dep:triehash", "dep:flate2", "dep:eyre"]

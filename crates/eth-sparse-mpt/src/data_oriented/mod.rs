@@ -1,16 +1,25 @@
 use std::ops::Range;
 
+use alloy_primitives::{keccak256, B256};
+use alloy_rlp::EMPTY_STRING_CODE;
+use arrayvec::ArrayVec;
 use reth_trie::Nibbles;
+
+use crate::utils::{encode_branch_node, encode_extension, encode_leaf};
 
 #[derive(Debug, Default)]
 pub struct DODiffTrie {
     hashed_nodes: Vec<bool>,
-    rlp_ptrs: Vec<[u8; 32]>,
+    rlp_ptrs: Vec<ArrayVec<u8, 33>>,
     nodes: Vec<DiffTrieNode>,
 
     values: Vec<u8>,
     keys: Vec<u8>,
     branch_node_children: Vec<[usize; 16]>, // 0 means child is empty
+
+    // scratchpad
+    rlp: Vec<u8>,
+    tmp_nibbles: Nibbles,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +80,7 @@ impl DODiffTrie {
 
     fn copy_or_overwrite_value(&mut self, old_value: Range<usize>, value: &[u8]) -> Range<usize> {
         if old_value.len() >= value.len() {
-            let new_range = old_value.start..value.len();
+            let new_range = old_value.start..old_value.start + value.len();
             self.values[old_value].copy_from_slice(value);
             new_range
         } else {
@@ -180,12 +189,12 @@ impl DODiffTrie {
                     });
 
                     let branch_child = if !suff2.is_empty() {
-                        next_node
-                    } else {
                         self.push_node(DiffTrieNode::Extension {
                             key: suff2,
                             next_node,
                         })
+                    } else {
+                        next_node
                     };
 
                     self.branch_node_children[branch_children][n1 as usize] = new_leaf_ptr;
@@ -255,6 +264,132 @@ impl DODiffTrie {
                 }
             }
             break;
+        }
+    }
+
+    fn rlp_encode_node(&mut self, node_idx: usize) {
+        self.rlp.clear();
+        let node = self.nodes.get(node_idx).expect("node not found").clone();
+        match node {
+            DiffTrieNode::Branch { children } => {
+                let mut child_rlp_pointers: [Option<&[u8]>; 16] = [None; 16];
+                for (idx, child_node_ptr) in self.branch_node_children[children].iter().enumerate()
+                {
+                    if *child_node_ptr != 0 {
+                        debug_assert!(self.hashed_nodes[*child_node_ptr]);
+                        child_rlp_pointers[idx] = Some(self.rlp_ptrs[*child_node_ptr].as_slice());
+                    }
+                }
+                encode_branch_node(&child_rlp_pointers, &mut self.rlp);
+            }
+            DiffTrieNode::Extension { key, next_node } => {
+                debug_assert!(self.hashed_nodes[next_node]);
+                let vec = self.tmp_nibbles.as_mut_vec_unchecked();
+                vec.clear();
+                vec.extend_from_slice(&self.keys[key]);
+                encode_extension(&self.tmp_nibbles, &self.rlp_ptrs[next_node], &mut self.rlp);
+            }
+            DiffTrieNode::Leaf { key, value } => {
+                let vec = self.tmp_nibbles.as_mut_vec_unchecked();
+                vec.clear();
+                vec.extend_from_slice(&self.keys[key]);
+                encode_leaf(&self.tmp_nibbles, &self.values[value], &mut self.rlp);
+            }
+            DiffTrieNode::Null => {
+                self.rlp.push(EMPTY_STRING_CODE);
+            }
+        }
+    }
+
+    // children must be hashed
+    fn calculate_rlp_pointer_node(&mut self, node_idx: usize) {
+        self.rlp_encode_node(node_idx);
+        if self.rlp.len() < 32 {
+            self.rlp_ptrs[node_idx].clear();
+            self.rlp_ptrs[node_idx]
+                .try_extend_from_slice(&self.rlp)
+                .unwrap();
+        } else {
+            let hash = keccak256(&self.rlp);
+            let result = &mut self.rlp_ptrs[node_idx];
+            result.clear();
+            result.push(EMPTY_STRING_CODE + 32);
+            result.try_extend_from_slice(hash.as_slice()).unwrap();
+        }
+        self.hashed_nodes[node_idx] = true;
+    }
+
+    pub fn root_hash(&mut self) -> B256 {
+        self.root_hash_node(0);
+        self.rlp_encode_node(0);
+        keccak256(&self.rlp)
+    }
+
+    fn root_hash_node(&mut self, node_idx: usize) {
+        if self.hashed_nodes[node_idx] {
+            return;
+        }
+        let node = self.nodes.get(node_idx).expect("node not found");
+        match node {
+            DiffTrieNode::Branch { children } => {
+                for child in self.branch_node_children[*children].into_iter() {
+                    if child != 0 {
+                        self.root_hash_node(child);
+                    }
+                }
+                self.calculate_rlp_pointer_node(node_idx);
+            }
+            DiffTrieNode::Extension { next_node, .. } => {
+                self.root_hash_node(*next_node);
+                self.calculate_rlp_pointer_node(node_idx);
+            }
+            DiffTrieNode::Null | DiffTrieNode::Leaf { .. } => {
+                self.calculate_rlp_pointer_node(node_idx);
+            }
+        }
+    }
+
+    pub fn print_node(&self, node_idx: usize) {
+        let node = self.nodes.get(node_idx).expect("node not found").clone();
+        let h = alloy_primitives::hex::encode;
+        match node {
+            DiffTrieNode::Branch { children } => {
+                println!("{} Branch", node_idx);
+                println!("{}", h(self.rlp_ptrs[node_idx].as_slice()));
+                for (idx, child) in self.branch_node_children[children].into_iter().enumerate() {
+                    if child != 0 {
+                        println!("  {} -> {}", idx, child);
+                    }
+                }
+                for child in self.branch_node_children[children].into_iter() {
+                    if child != 0 {
+                        self.print_node(child);
+                    }
+                }
+            }
+            DiffTrieNode::Extension { next_node, key } => {
+                println!(
+                    "{} Extension {:?} -> {}",
+                    node_idx,
+                    h(&self.keys[key]),
+                    next_node
+                );
+                println!("{}", h(self.rlp_ptrs[node_idx].as_slice()));
+                self.print_node(next_node);
+            }
+            DiffTrieNode::Leaf { key, value } => {
+                println!(
+                    "{} Leaf {:?} : {:?}",
+                    node_idx,
+                    h(&self.keys[key]),
+                    h(&self.values[value])
+                );
+                println!("{}", h(self.rlp_ptrs[node_idx].as_slice()));
+            }
+            DiffTrieNode::Null => {
+                println!("{} Null", node_idx);
+                println!("{}", h(self.rlp_ptrs[node_idx].as_slice()));
+            }
         }
     }
 }

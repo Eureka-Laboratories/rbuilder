@@ -16,20 +16,24 @@ fn prepare_key_value_data(n: usize) -> (Vec<Bytes>, Vec<Bytes>) {
 }
 
 fn insert_nodes(c: &mut Criterion) {
+    // let (keys, values) = prepare_key_value_data(10000);
     let (keys, values) = prepare_key_value_data(10000);
 
     let mut trie = DODiffTrie::new_empty();
     trie.reserve(15_000);
     // let nibble_keys = keys.iter().map(|k| Nibbles::unpack(k)).collect::<Vec<_>>();
+    let mut do_hash = B256::ZERO;
     c.bench_function("insert_nodes_do_trie", |b| {
         b.iter(|| {
             trie.clear_empty();
             for (key, value) in keys.iter().zip(values.iter()) {
                 trie.insert(key, value);
             }
+            do_hash = trie.root_hash();
         })
     });
 
+    let mut baseline_hash = B256::ZERO;
     let mut trie = DiffTrie::new_empty();
     c.bench_function("insert_nodes_basic_trie", |b| {
         b.iter(|| {
@@ -37,8 +41,12 @@ fn insert_nodes(c: &mut Criterion) {
             for (key, value) in keys.iter().zip(values.iter()) {
                 trie.insert(key.clone(), value.clone()).unwrap();
             }
+            baseline_hash = trie.root_hash().unwrap();
         })
     });
+    if !do_hash.is_zero() && !baseline_hash.is_zero() {
+        assert_eq!(do_hash, baseline_hash);
+    }
 }
 
 criterion_group!(benches, insert_nodes);
