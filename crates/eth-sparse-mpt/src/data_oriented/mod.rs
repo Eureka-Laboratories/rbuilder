@@ -10,15 +10,34 @@ mod tests;
 
 use crate::utils::{encode_branch_node, encode_extension, encode_leaf};
 
+#[derive(Debug, Clone, Copy)]
+enum NodePtr {
+    Local(usize),
+    Remote(usize),
+}
+
+impl NodePtr {
+    fn need_known(&self) -> Result<usize, NodeNotFound> {
+        match self {
+            NodePtr::Local(idx) => Ok(*idx),
+            NodePtr::Remote(_) => Err(NodeNotFound),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct DODiffTrie {
+    // 3 arrays belowe are of the same length
     hashed_nodes: Vec<bool>,
-    rlp_ptrs: Vec<ArrayVec<u8, 33>>,
+    rlp_ptrs_local: Vec<ArrayVec<u8, 33>>,
     nodes: Vec<DiffTrieNode>,
+
+    // nodes that we don't know but we know their hash
+    rlp_ptrs_remote: Vec<ArrayVec<u8, 33>>,
 
     values: Vec<u8>,
     keys: Vec<u8>,
-    branch_node_children: Vec<[usize; 16]>, // 0 means child is empty
+    branch_node_children: Vec<[Option<NodePtr>; 16]>, // 0 means child is empty
 
     // scratchpad
     rlp: Vec<u8>,
@@ -34,7 +53,7 @@ enum DiffTrieNode {
     },
     Extension {
         key: Range<usize>,
-        next_node: usize,
+        next_node: NodePtr,
     },
     Branch {
         children: usize,
@@ -44,9 +63,15 @@ enum DiffTrieNode {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DeletionError {
+    #[error("Deletion error: {0:?}")]
+    NodeNotFound(#[from] NodeNotFound),
     #[error("Key node not found in the trie")]
     KeyNotFound,
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("Node not found")]
+pub struct NodeNotFound;
 
 impl DODiffTrie {
     pub fn new_empty() -> Self {
@@ -57,7 +82,7 @@ impl DODiffTrie {
 
     pub fn reserve(&mut self, len: usize) {
         self.hashed_nodes.reserve(len);
-        self.rlp_ptrs.reserve(len);
+        self.rlp_ptrs_local.reserve(len);
         self.nodes.reserve(len);
         self.keys.reserve(len);
         self.branch_node_children.reserve(len);
@@ -68,12 +93,12 @@ impl DODiffTrie {
         self.push_node(DiffTrieNode::Null);
     }
 
-    fn push_node(&mut self, node: DiffTrieNode) -> usize {
+    fn push_node(&mut self, node: DiffTrieNode) -> NodePtr {
         let idx = self.nodes.len();
         self.nodes.push(node);
         self.hashed_nodes.push(false);
-        self.rlp_ptrs.push(Default::default());
-        idx
+        self.rlp_ptrs_local.push(Default::default());
+        NodePtr::Local(idx)
     }
 
     fn copy_value(&mut self, value: &[u8]) -> Range<usize> {
@@ -106,7 +131,7 @@ impl DODiffTrie {
 
     pub fn clear(&mut self) {
         self.hashed_nodes.clear();
-        self.rlp_ptrs.clear();
+        self.rlp_ptrs_local.clear();
         self.values.clear();
         self.keys.clear();
         self.branch_node_children.clear();
@@ -128,7 +153,7 @@ impl DODiffTrie {
         (prefix, n1, suff1, n2, suff2)
     }
 
-    pub fn insert(&mut self, key: &[u8], insert_value: &[u8]) {
+    pub fn insert(&mut self, key: &[u8], insert_value: &[u8]) -> Result<(), NodeNotFound> {
         let n = Nibbles::unpack(key);
         let ins_key = n.as_slice();
 
@@ -137,15 +162,15 @@ impl DODiffTrie {
 
         loop {
             self.hashed_nodes[current_node] = false;
-            let node = self.nodes.get(current_node).expect("node not found");
+            let node = self.nodes.get(current_node).ok_or(NodeNotFound)?;
             match node {
                 DiffTrieNode::Branch { children } => {
                     let children = *children;
 
                     let n = ins_key[path_walked] as usize;
                     path_walked += 1;
-                    if self.branch_node_children[children][n] != 0 {
-                        current_node = self.branch_node_children[children][n];
+                    if let Some(child_ptr) = self.branch_node_children[children][n] {
+                        current_node = child_ptr.need_known()?;
                         continue;
                     } else {
                         let new_leaf_key = self.insert_key(&ins_key[path_walked..]);
@@ -154,7 +179,7 @@ impl DODiffTrie {
                             key: new_leaf_key,
                             value: leaf_value,
                         });
-                        self.branch_node_children[children][n] = leaf_ptr;
+                        self.branch_node_children[children][n] = Some(leaf_ptr);
                     }
                 }
                 DiffTrieNode::Extension { key, next_node } => {
@@ -163,7 +188,7 @@ impl DODiffTrie {
 
                     if ins_key[path_walked..].starts_with(&self.keys[key.clone()]) {
                         path_walked += key.len();
-                        current_node = next_node;
+                        current_node = next_node.need_known()?;
                         continue;
                     }
 
@@ -174,7 +199,7 @@ impl DODiffTrie {
                     if has_extension_node {
                         let new_ext_key = self.insert_key(prefix);
                         // next node will branch node that we will push below
-                        let ext_next_node = self.nodes.len();
+                        let ext_next_node = NodePtr::Local(self.nodes.len());
                         self.nodes[current_node] = DiffTrieNode::Extension {
                             key: new_ext_key,
                             next_node: ext_next_node,
@@ -207,8 +232,8 @@ impl DODiffTrie {
                         next_node
                     };
 
-                    self.branch_node_children[branch_children][n1 as usize] = new_leaf_ptr;
-                    self.branch_node_children[branch_children][n2 as usize] = branch_child;
+                    self.branch_node_children[branch_children][n1 as usize] = Some(new_leaf_ptr);
+                    self.branch_node_children[branch_children][n2 as usize] = Some(branch_child);
                 }
                 DiffTrieNode::Leaf { key, value } => {
                     let key = key.clone();
@@ -231,7 +256,7 @@ impl DODiffTrie {
                     if has_extension_node {
                         let new_ext_key = self.insert_key(prefix);
                         // next node will branch node that we will push below
-                        let ext_next_node = self.nodes.len();
+                        let ext_next_node = NodePtr::Local(self.nodes.len());
                         self.nodes[current_node] = DiffTrieNode::Extension {
                             key: new_ext_key,
                             next_node: ext_next_node,
@@ -261,8 +286,8 @@ impl DODiffTrie {
                         value: second_leaf_value,
                     });
 
-                    self.branch_node_children[branch_children][n1 as usize] = first_leaf_ptr;
-                    self.branch_node_children[branch_children][n2 as usize] = second_leaf_ptr;
+                    self.branch_node_children[branch_children][n1 as usize] = Some(first_leaf_ptr);
+                    self.branch_node_children[branch_children][n2 as usize] = Some(second_leaf_ptr);
                 }
                 DiffTrieNode::Null => {
                     let new_leaf_key = self.insert_key(&ins_key[path_walked..]);
@@ -275,6 +300,7 @@ impl DODiffTrie {
             }
             break;
         }
+        Ok(())
     }
 
     fn merge_keys(&mut self, key1: Range<usize>, nibble: u8, key2: Range<usize>) -> Range<usize> {
@@ -287,6 +313,7 @@ impl DODiffTrie {
         new_start..new_len
     }
 
+    // if it returned NodeNotFound, this means that trie is in unsable state
     pub fn delete(&mut self, key: &[u8]) -> Result<(), DeletionError> {
         let n = Nibbles::unpack(key);
         let del_key = n.as_slice();
@@ -312,14 +339,12 @@ impl DODiffTrie {
                     path_walked += 1;
                     self.walk_path.push((current_node, n));
 
-                    if self.branch_node_children[children][n as usize] != 0 {
-                        current_node = self.branch_node_children[children][n as usize];
+                    if let Some(child_ptr) = self.branch_node_children[children][n as usize] {
+                        current_node = child_ptr.need_known()?;
                         continue;
                     } else {
                         return Err(DeletionError::KeyNotFound);
                     }
-
-                    // TODO: check if we are deleting the last orphan that we don't have
                 }
                 DiffTrieNode::Extension { key, next_node } => {
                     let key = key.clone();
@@ -328,7 +353,7 @@ impl DODiffTrie {
                     if del_key[path_walked..].starts_with(&self.keys[key.clone()]) {
                         self.walk_path.push((current_node, 0));
                         path_walked += key.len();
-                        current_node = next_node;
+                        current_node = next_node.need_known()?;
                         continue;
                     }
                     return Err(DeletionError::KeyNotFound);
@@ -350,7 +375,10 @@ impl DODiffTrie {
         enum NodeDeletionResult {
             NodeDeleted,
             NodeUpdated,
-            BranchBelowRemovedWithOneChild { child_nibble: u8, child_ptr: usize },
+            BranchBelowRemovedWithOneChild {
+                child_nibble: u8,
+                child_ptr: NodePtr,
+            },
         }
 
         let mut deletion_result = NodeDeletionResult::NodeDeleted;
@@ -365,20 +393,28 @@ impl DODiffTrie {
                     }
                     DiffTrieNode::Branch { children } => {
                         let children = &mut self.branch_node_children[*children];
-                        let children_count = children.iter().filter(|c| **c != 0).count();
+                        let children_count = children.iter().filter(|c| c.is_some()).count();
                         match children_count {
                             3.. => {
-                                children[current_node_child as usize] = 0;
+                                children[current_node_child as usize] = None;
                                 deletion_result = NodeDeletionResult::NodeUpdated;
                             }
                             2 => {
-                                children[current_node_child as usize] = 0;
-                                let (orphan_nibble, orphan_ptr) =
-                                    children.iter().enumerate().find(|(_, c)| **c != 0).unwrap();
+                                children[current_node_child as usize] = None;
+                                let (orphan_nibble, orphan_ptr) = children
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(_, c)| c.is_some())
+                                    .unwrap();
+                                let orphan_ptr = orphan_ptr.unwrap();
+
+                                // we do it so we don't panic below
+                                orphan_ptr.need_known()?;
+
                                 deletion_result =
                                     NodeDeletionResult::BranchBelowRemovedWithOneChild {
                                         child_nibble: orphan_nibble as u8,
-                                        child_ptr: *orphan_ptr,
+                                        child_ptr: orphan_ptr,
                                     };
                             }
                             _ => unreachable!(),
@@ -391,8 +427,10 @@ impl DODiffTrie {
                     child_ptr: orphan_ptr,
                 } => {
                     // we need to merge orphaned node and its nibble into the new parent
+                    let orphan_ptr_idx =
+                        orphan_ptr.need_known().expect("orphan is not in the trie");
                     let new_parent = self.nodes[current_node].clone();
-                    let orphaned_node = self.nodes[orphan_ptr].clone();
+                    let orphaned_node = self.nodes[orphan_ptr_idx].clone();
                     match (new_parent, orphaned_node) {
                         (
                             DiffTrieNode::Extension {
@@ -453,12 +491,12 @@ impl DODiffTrie {
                         ) => {
                             // leaf eats nibble and branch starts to point to leaf
                             let new_leaf_key = self.merge_keys(0..0, orphan_nibble, orphan_key);
-                            self.nodes[orphan_ptr] = DiffTrieNode::Leaf {
+                            self.nodes[orphan_ptr_idx] = DiffTrieNode::Leaf {
                                 key: new_leaf_key,
                                 value,
                             };
                             self.branch_node_children[parent_children]
-                                [current_node_child as usize] = orphan_ptr;
+                                [current_node_child as usize] = Some(orphan_ptr);
                         }
                         (
                             DiffTrieNode::Branch {
@@ -471,12 +509,12 @@ impl DODiffTrie {
                         ) => {
                             // extension eats nibble and branch starts to point to leaf
                             let new_ext_key = self.merge_keys(0..0, orphan_nibble, orphan_key);
-                            self.nodes[orphan_ptr] = DiffTrieNode::Extension {
+                            self.nodes[orphan_ptr_idx] = DiffTrieNode::Extension {
                                 key: new_ext_key,
                                 next_node,
                             };
                             self.branch_node_children[parent_children]
-                                [current_node_child as usize] = orphan_ptr;
+                                [current_node_child as usize] = Some(orphan_ptr);
                         }
                         (
                             DiffTrieNode::Branch {
@@ -491,7 +529,7 @@ impl DODiffTrie {
                                 next_node: orphan_ptr,
                             });
                             self.branch_node_children[parent_children]
-                                [current_node_child as usize] = next_ext_ptr;
+                                [current_node_child as usize] = Some(next_ext_ptr);
                         }
                         _ => unreachable!(),
                     }
@@ -515,7 +553,8 @@ impl DODiffTrie {
                 child_nibble: orphan_nibble,
                 child_ptr: orphan_ptr,
             } => {
-                match &self.nodes[orphan_ptr] {
+                let orphan_ptr_idx = orphan_ptr.need_known().expect("orphan is not in the trie");
+                match &self.nodes[orphan_ptr_idx] {
                     DiffTrieNode::Leaf {
                         key: orphan_key,
                         value,
@@ -562,19 +601,31 @@ impl DODiffTrie {
                 let mut child_rlp_pointers: [Option<&[u8]>; 16] = [None; 16];
                 for (idx, child_node_ptr) in self.branch_node_children[children].iter().enumerate()
                 {
-                    if *child_node_ptr != 0 {
-                        debug_assert!(self.hashed_nodes[*child_node_ptr]);
-                        child_rlp_pointers[idx] = Some(self.rlp_ptrs[*child_node_ptr].as_slice());
+                    if let Some(child) = child_node_ptr {
+                        let child_rlp_ptr = match child {
+                            NodePtr::Local(idx) => {
+                                debug_assert!(self.hashed_nodes[*idx]);
+                                Some(self.rlp_ptrs_local[*idx].as_slice())
+                            }
+                            NodePtr::Remote(idx) => Some(self.rlp_ptrs_remote[*idx].as_slice()),
+                        };
+                        child_rlp_pointers[idx] = child_rlp_ptr;
                     }
                 }
                 encode_branch_node(&child_rlp_pointers, &mut self.rlp);
             }
             DiffTrieNode::Extension { key, next_node } => {
-                debug_assert!(self.hashed_nodes[next_node]);
                 let vec = self.tmp_nibbles.as_mut_vec_unchecked();
                 vec.clear();
                 vec.extend_from_slice(&self.keys[key]);
-                encode_extension(&self.tmp_nibbles, &self.rlp_ptrs[next_node], &mut self.rlp);
+                let child_rlp_ptr = match next_node {
+                    NodePtr::Local(idx) => {
+                        debug_assert!(self.hashed_nodes[idx]);
+                        self.rlp_ptrs_local[idx].as_slice()
+                    }
+                    NodePtr::Remote(idx) => self.rlp_ptrs_remote[idx].as_slice(),
+                };
+                encode_extension(&self.tmp_nibbles, child_rlp_ptr, &mut self.rlp);
             }
             DiffTrieNode::Leaf { key, value } => {
                 let vec = self.tmp_nibbles.as_mut_vec_unchecked();
@@ -592,13 +643,13 @@ impl DODiffTrie {
     fn calculate_rlp_pointer_node(&mut self, node_idx: usize) {
         self.rlp_encode_node(node_idx);
         if self.rlp.len() < 32 {
-            self.rlp_ptrs[node_idx].clear();
-            self.rlp_ptrs[node_idx]
+            self.rlp_ptrs_local[node_idx].clear();
+            self.rlp_ptrs_local[node_idx]
                 .try_extend_from_slice(&self.rlp)
                 .unwrap();
         } else {
             let hash = keccak256(&self.rlp);
-            let result = &mut self.rlp_ptrs[node_idx];
+            let result = &mut self.rlp_ptrs_local[node_idx];
             result.clear();
             result.push(EMPTY_STRING_CODE + 32);
             result.try_extend_from_slice(hash.as_slice()).unwrap();
@@ -619,15 +670,17 @@ impl DODiffTrie {
         let node = self.nodes.get(node_idx).expect("node not found");
         match node {
             DiffTrieNode::Branch { children } => {
-                for child in self.branch_node_children[*children].into_iter() {
-                    if child != 0 {
+                for child in self.branch_node_children[*children].into_iter().flatten() {
+                    if let NodePtr::Local(child) = child {
                         self.root_hash_node(child);
                     }
                 }
                 self.calculate_rlp_pointer_node(node_idx);
             }
             DiffTrieNode::Extension { next_node, .. } => {
-                self.root_hash_node(*next_node);
+                if let NodePtr::Local(child) = next_node {
+                    self.root_hash_node(*child);
+                }
                 self.calculate_rlp_pointer_node(node_idx);
             }
             DiffTrieNode::Null | DiffTrieNode::Leaf { .. } => {
@@ -642,27 +695,29 @@ impl DODiffTrie {
         match node {
             DiffTrieNode::Branch { children } => {
                 println!("{} Branch", node_idx);
-                println!("{}", h(self.rlp_ptrs[node_idx].as_slice()));
+                println!("{}", h(self.rlp_ptrs_local[node_idx].as_slice()));
                 for (idx, child) in self.branch_node_children[children].into_iter().enumerate() {
-                    if child != 0 {
-                        println!("  {} -> {}", idx, child);
+                    if child.is_some() {
+                        println!("  {} -> {:?}", idx, child);
                     }
                 }
-                for child in self.branch_node_children[children].into_iter() {
-                    if child != 0 {
-                        self.print_node(child);
+                for child in self.branch_node_children[children].into_iter().flatten() {
+                    if let NodePtr::Local(idx) = child {
+                        self.print_node(idx);
                     }
                 }
             }
             DiffTrieNode::Extension { next_node, key } => {
                 println!(
-                    "{} Extension {:?} -> {}",
+                    "{} Extension {:?} -> {:?}",
                     node_idx,
                     h(&self.keys[key]),
                     next_node
                 );
-                println!("{}", h(self.rlp_ptrs[node_idx].as_slice()));
-                self.print_node(next_node);
+                println!("{}", h(self.rlp_ptrs_local[node_idx].as_slice()));
+                if let NodePtr::Local(idx) = next_node {
+                    self.print_node(idx);
+                }
             }
             DiffTrieNode::Leaf { key, value } => {
                 println!(
@@ -671,11 +726,11 @@ impl DODiffTrie {
                     h(&self.keys[key]),
                     h(&self.values[value])
                 );
-                println!("{}", h(self.rlp_ptrs[node_idx].as_slice()));
+                println!("{}", h(self.rlp_ptrs_local[node_idx].as_slice()));
             }
             DiffTrieNode::Null => {
                 println!("{} Null", node_idx);
-                println!("{}", h(self.rlp_ptrs[node_idx].as_slice()));
+                println!("{}", h(self.rlp_ptrs_local[node_idx].as_slice()));
             }
         }
     }

@@ -27,7 +27,7 @@ fn insert_nodes(c: &mut Criterion) {
         b.iter(|| {
             trie.clear_empty();
             for (key, value) in keys.iter().zip(values.iter()) {
-                trie.insert(key, value);
+                trie.insert(key, value).unwrap();
             }
             do_hash = trie.root_hash();
         })

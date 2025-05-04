@@ -7,7 +7,7 @@ use super::*;
 fn compare_impls(data: &[(Vec<u8>, Vec<u8>)]) {
     let mut trie = DODiffTrie::new_empty();
     for (key, value) in data {
-        trie.insert(key, value);
+        trie.insert(key, value).unwrap();
     }
     let got_hash = trie.root_hash();
     if env::var("ETH_SPARSE_MPT_TEST_PRINT").is_ok() {
@@ -20,7 +20,7 @@ fn compare_impls(data: &[(Vec<u8>, Vec<u8>)]) {
 fn compare_with_removals(data: &[(Vec<u8>, Vec<u8>)], remove: &[Vec<u8>]) -> eyre::Result<()> {
     let mut trie = DODiffTrie::new_empty();
     for (key, value) in data {
-        trie.insert(key, value);
+        trie.insert(key, value)?;
     }
 
     if env::var("ETH_SPARSE_MPT_TEST_PRINT").is_ok() {
@@ -49,7 +49,7 @@ fn compare_with_removals(data: &[(Vec<u8>, Vec<u8>)], remove: &[Vec<u8>]) -> eyr
         println!("Trie from filtered data");
         let mut trie = DODiffTrie::new_empty();
         for (key, value) in &filtered_data {
-            trie.insert(key, value);
+            trie.insert(key, value).unwrap();
         }
         trie.root_hash();
         trie.print_node(0);
