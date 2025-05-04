@@ -1,7 +1,12 @@
 use std::ops::Range;
 
 use alloy_primitives::{keccak256, B256};
+use alloy_rlp::Decodable;
 use alloy_rlp::EMPTY_STRING_CODE;
+use alloy_trie::nodes::{
+    BranchNode as AlloyBranchNode, ExtensionNode as AlloyExtensionNode, LeafNode as AlloyLeafNode,
+    TrieNode as AlloyTrieNode,
+};
 use arrayvec::ArrayVec;
 use reth_trie::Nibbles;
 
@@ -111,6 +116,12 @@ impl DODiffTrie {
         let range = self.keys.len()..self.keys.len() + key.len();
         self.keys.extend_from_slice(key);
         range
+    }
+
+    fn insert_remote_node_rlp(&mut self, rlp: &ArrayVec<u8, 33>) -> NodePtr {
+        let idx = self.rlp_ptrs_remote.len();
+        self.rlp_ptrs_remote.push(rlp.clone());
+        NodePtr::Remote(idx)
     }
 
     fn copy_or_overwrite_value(&mut self, old_value: Range<usize>, value: &[u8]) -> Range<usize> {
@@ -733,6 +744,157 @@ impl DODiffTrie {
                 println!("{}", h(self.rlp_ptrs_local[node_idx].as_slice()));
             }
         }
+    }
+
+    // node can be adde only if all of its parents are actually in the trie
+    pub fn add_node_from_proof(
+        &mut self,
+        path: &[u8],
+        node: &ProofNode,
+    ) -> Result<(), NodeNotFound> {
+        let mut current_node = 0;
+        let mut path_walked = 0;
+
+        let mut parent_ptr = None;
+        let mut parent_nibble = 0;
+        loop {
+            let node = self.nodes.get(current_node).ok_or(NodeNotFound)?;
+            match node {
+                DiffTrieNode::Branch { children } => {
+                    let children = *children;
+
+                    let n = path[path_walked] as usize;
+                    path_walked += 1;
+                    if path[path_walked..].is_empty() {
+                        parent_ptr = self.branch_node_children[children][n];
+                        parent_nibble = n;
+                        break;
+                    }
+                    if let Some(child_ptr) = self.branch_node_children[children][n] {
+                        current_node = child_ptr.need_known()?;
+                        continue;
+                    } else {
+                        return Err(NodeNotFound);
+                    }
+                }
+                DiffTrieNode::Extension { key, next_node } => {
+                    let key = key.clone();
+                    let next_node = *next_node;
+
+                    if path[path_walked..].is_empty() {
+                        parent_ptr = Some(next_node);
+                        parent_nibble = 0;
+                        break;
+                    }
+
+                    if path[path_walked..].starts_with(&self.keys[key.clone()]) {
+                        path_walked += key.len();
+                        current_node = next_node.need_known()?;
+                        continue;
+                    }
+                }
+                _ => {
+                    // no proofs can be added here,
+                    return Ok(());
+                }
+            }
+            break;
+        }
+
+        match parent_ptr {
+            Some(NodePtr::Remote(_)) => {}
+            _ => {
+                // node is not needed
+                return Ok(());
+            }
+        };
+
+        let new_node = match node {
+            ProofNode::Leaf { key, value } => {
+                let key = self.insert_key(key);
+                let value = self.copy_value(value);
+                self.push_node(DiffTrieNode::Leaf { key, value })
+            }
+            ProofNode::Extension { key, child } => {
+                let key = self.insert_key(key);
+                let next_node = self.insert_remote_node_rlp(child);
+                self.push_node(DiffTrieNode::Extension { key, next_node })
+            }
+            ProofNode::Branch { children } => {
+                let branch_node_children = self.create_branch_children();
+                for b in 0..16 {
+                    if let Some(child_rlp) = &children[b] {
+                        let child_ptr = self.insert_remote_node_rlp(child_rlp);
+                        self.branch_node_children[branch_node_children][b] = Some(child_ptr);
+                    }
+                }
+                self.push_node(DiffTrieNode::Branch {
+                    children: branch_node_children,
+                })
+            }
+        };
+
+        // give pointer to parent
+        match &mut self.nodes[current_node] {
+            DiffTrieNode::Branch { children } => {
+                self.branch_node_children[*children][parent_nibble] = Some(new_node);
+            }
+            DiffTrieNode::Extension { next_node, .. } => {
+                *next_node = new_node;
+            }
+            _ => unreachable!(),
+        }
+
+        Ok(())
+    }
+}
+
+#[allow(clippy::large_enum_variant)]
+pub enum ProofNode {
+    Leaf {
+        key: Nibbles,
+        value: Vec<u8>,
+    },
+    Extension {
+        key: Nibbles,
+        child: ArrayVec<u8, 33>,
+    },
+    Branch {
+        children: [Option<ArrayVec<u8, 33>>; 16],
+    },
+}
+
+impl ProofNode {
+    pub fn try_from_rlp_encoded_node(mut encoded_node: &[u8]) -> Result<Self, alloy_rlp::Error> {
+        let alloy_trie_node = AlloyTrieNode::decode(&mut encoded_node)?;
+        let result = match alloy_trie_node {
+            AlloyTrieNode::Branch(alloy_node) => {
+                let mut children: [Option<ArrayVec<u8, 33>>; 16] = Default::default();
+                let mut stack_iter = alloy_node.stack.into_iter();
+                for index in 0..16 {
+                    if alloy_node.state_mask.is_bit_set(index) {
+                        let rlp_ptr = stack_iter
+                            .next()
+                            .expect("stack must be the same size as mask")
+                            .as_slice()
+                            .try_into()
+                            .unwrap();
+                        children[index as usize] = Some(rlp_ptr);
+                    }
+                }
+                ProofNode::Branch { children }
+            }
+            AlloyTrieNode::Extension(node) => ProofNode::Extension {
+                key: node.key,
+                child: node.child.as_slice().try_into().unwrap(),
+            },
+            AlloyTrieNode::Leaf(node) => ProofNode::Leaf {
+                key: node.key,
+                value: node.value,
+            },
+            AlloyTrieNode::EmptyRoot => todo!("handle empty root from proof"),
+        };
+        Ok(result)
     }
 }
 
