@@ -5,6 +5,9 @@ use alloy_rlp::EMPTY_STRING_CODE;
 use arrayvec::ArrayVec;
 use reth_trie::Nibbles;
 
+#[cfg(test)]
+mod tests;
+
 use crate::utils::{encode_branch_node, encode_extension, encode_leaf};
 
 #[derive(Debug, Default)]
@@ -20,6 +23,7 @@ pub struct DODiffTrie {
     // scratchpad
     rlp: Vec<u8>,
     tmp_nibbles: Nibbles,
+    walk_path: Vec<(usize, u8)>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +40,12 @@ enum DiffTrieNode {
         children: usize,
     },
     Null,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DeletionError {
+    #[error("Key node not found in the trie")]
+    KeyNotFound,
 }
 
 impl DODiffTrie {
@@ -121,8 +131,8 @@ impl DODiffTrie {
     pub fn insert(&mut self, key: &[u8], insert_value: &[u8]) {
         let n = Nibbles::unpack(key);
         let ins_key = n.as_slice();
-        let mut current_node = 0;
 
+        let mut current_node = 0;
         let mut path_walked = 0;
 
         loop {
@@ -265,6 +275,283 @@ impl DODiffTrie {
             }
             break;
         }
+    }
+
+    fn merge_keys(&mut self, key1: Range<usize>, nibble: u8, key2: Range<usize>) -> Range<usize> {
+        let new_start = self.keys.len();
+        let new_len = self.keys.len() + key1.len() + key2.len() + 1;
+        self.keys.resize(new_len, 0);
+        self.keys.copy_within(key1.clone(), new_start);
+        self.keys[new_start + key1.len()] = nibble;
+        self.keys.copy_within(key2, new_start + key1.len() + 1);
+        new_start..new_len
+    }
+
+    pub fn delete(&mut self, key: &[u8]) -> Result<(), DeletionError> {
+        let n = Nibbles::unpack(key);
+        let del_key = n.as_slice();
+
+        let mut current_node = 0;
+        let mut path_walked = 0;
+
+        self.walk_path.clear();
+
+        loop {
+            self.hashed_nodes[current_node] = false;
+            let node = self.nodes.get(current_node).expect("node not found");
+            match node {
+                DiffTrieNode::Branch { children } => {
+                    // deleting from branch, key not found
+                    if del_key.len() == path_walked {
+                        return Err(DeletionError::KeyNotFound);
+                    }
+
+                    let children = *children;
+
+                    let n = del_key[path_walked];
+                    path_walked += 1;
+                    self.walk_path.push((current_node, n));
+
+                    if self.branch_node_children[children][n as usize] != 0 {
+                        current_node = self.branch_node_children[children][n as usize];
+                        continue;
+                    } else {
+                        return Err(DeletionError::KeyNotFound);
+                    }
+
+                    // TODO: check if we are deleting the last orphan that we don't have
+                }
+                DiffTrieNode::Extension { key, next_node } => {
+                    let key = key.clone();
+                    let next_node = *next_node;
+
+                    if del_key[path_walked..].starts_with(&self.keys[key.clone()]) {
+                        self.walk_path.push((current_node, 0));
+                        path_walked += key.len();
+                        current_node = next_node;
+                        continue;
+                    }
+                    return Err(DeletionError::KeyNotFound);
+                }
+                DiffTrieNode::Leaf { key, .. } => {
+                    if self.keys[key.clone()] == del_key[path_walked..] {
+                        self.walk_path.push((current_node, 0));
+                        break;
+                    }
+                    return Err(DeletionError::KeyNotFound);
+                }
+                DiffTrieNode::Null => {
+                    return Err(DeletionError::KeyNotFound);
+                }
+            }
+        }
+
+        #[derive(Debug)]
+        enum NodeDeletionResult {
+            NodeDeleted,
+            NodeUpdated,
+            BranchBelowRemovedWithOneChild { child_nibble: u8, child_ptr: usize },
+        }
+
+        let mut deletion_result = NodeDeletionResult::NodeDeleted;
+
+        for (current_node, current_node_child) in self.walk_path.iter().rev() {
+            let current_node = *current_node;
+            let current_node_child = *current_node_child;
+            match deletion_result {
+                NodeDeletionResult::NodeDeleted => match &self.nodes[current_node] {
+                    DiffTrieNode::Leaf { .. } => {
+                        deletion_result = NodeDeletionResult::NodeDeleted;
+                    }
+                    DiffTrieNode::Branch { children } => {
+                        let children = &mut self.branch_node_children[*children];
+                        let children_count = children.iter().filter(|c| **c != 0).count();
+                        match children_count {
+                            3.. => {
+                                children[current_node_child as usize] = 0;
+                                deletion_result = NodeDeletionResult::NodeUpdated;
+                            }
+                            2 => {
+                                children[current_node_child as usize] = 0;
+                                let (orphan_nibble, orphan_ptr) =
+                                    children.iter().enumerate().find(|(_, c)| **c != 0).unwrap();
+                                deletion_result =
+                                    NodeDeletionResult::BranchBelowRemovedWithOneChild {
+                                        child_nibble: orphan_nibble as u8,
+                                        child_ptr: *orphan_ptr,
+                                    };
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => unreachable!(),
+                },
+                NodeDeletionResult::BranchBelowRemovedWithOneChild {
+                    child_nibble: orphan_nibble,
+                    child_ptr: orphan_ptr,
+                } => {
+                    // we need to merge orphaned node and its nibble into the new parent
+                    let new_parent = self.nodes[current_node].clone();
+                    let orphaned_node = self.nodes[orphan_ptr].clone();
+                    match (new_parent, orphaned_node) {
+                        (
+                            DiffTrieNode::Extension {
+                                key: parent_key, ..
+                            },
+                            DiffTrieNode::Leaf {
+                                key: orphan_key,
+                                value,
+                            },
+                        ) => {
+                            // replace extension node by merging its path into leaf with child_nibble
+                            let new_leaf_key =
+                                self.merge_keys(parent_key, orphan_nibble, orphan_key);
+                            self.nodes[current_node] = DiffTrieNode::Leaf {
+                                key: new_leaf_key,
+                                value,
+                            }
+                        }
+                        (
+                            DiffTrieNode::Extension {
+                                key: parent_key, ..
+                            },
+                            DiffTrieNode::Extension {
+                                key: orphan_key,
+                                next_node: orphan_next,
+                            },
+                        ) => {
+                            // we merge two extensions together
+                            let new_ext_key =
+                                self.merge_keys(parent_key, orphan_nibble, orphan_key);
+                            self.nodes[current_node] = DiffTrieNode::Extension {
+                                key: new_ext_key,
+                                next_node: orphan_next,
+                            }
+                        }
+                        (
+                            DiffTrieNode::Extension {
+                                key: parent_key, ..
+                            },
+                            DiffTrieNode::Branch { .. },
+                        ) => {
+                            // extension eats the orphan nibble and start to point to orphan branch
+                            // branch is not changed
+                            let new_ext_key = self.merge_keys(parent_key, orphan_nibble, 0..0);
+                            self.nodes[current_node] = DiffTrieNode::Extension {
+                                key: new_ext_key,
+                                next_node: orphan_ptr,
+                            }
+                        }
+                        (
+                            DiffTrieNode::Branch {
+                                children: parent_children,
+                            },
+                            DiffTrieNode::Leaf {
+                                key: orphan_key,
+                                value,
+                            },
+                        ) => {
+                            // leaf eats nibble and branch starts to point to leaf
+                            let new_leaf_key = self.merge_keys(0..0, orphan_nibble, orphan_key);
+                            self.nodes[orphan_ptr] = DiffTrieNode::Leaf {
+                                key: new_leaf_key,
+                                value,
+                            };
+                            self.branch_node_children[parent_children]
+                                [current_node_child as usize] = orphan_ptr;
+                        }
+                        (
+                            DiffTrieNode::Branch {
+                                children: parent_children,
+                            },
+                            DiffTrieNode::Extension {
+                                key: orphan_key,
+                                next_node,
+                            },
+                        ) => {
+                            // extension eats nibble and branch starts to point to leaf
+                            let new_ext_key = self.merge_keys(0..0, orphan_nibble, orphan_key);
+                            self.nodes[orphan_ptr] = DiffTrieNode::Extension {
+                                key: new_ext_key,
+                                next_node,
+                            };
+                            self.branch_node_children[parent_children]
+                                [current_node_child as usize] = orphan_ptr;
+                        }
+                        (
+                            DiffTrieNode::Branch {
+                                children: parent_children,
+                            },
+                            DiffTrieNode::Branch { .. },
+                        ) => {
+                            // create extension node that eats nibble
+                            let new_ext_key = self.insert_key(&[orphan_nibble]);
+                            let next_ext_ptr = self.push_node(DiffTrieNode::Extension {
+                                key: new_ext_key,
+                                next_node: orphan_ptr,
+                            });
+                            self.branch_node_children[parent_children]
+                                [current_node_child as usize] = next_ext_ptr;
+                        }
+                        _ => unreachable!(),
+                    }
+                    deletion_result = NodeDeletionResult::NodeUpdated;
+                    break;
+                }
+                NodeDeletionResult::NodeUpdated => break,
+            }
+        }
+
+        // here we handle the case when deletion reaches the head
+        match deletion_result {
+            // updates terminated before reaching the top
+            NodeDeletionResult::NodeUpdated => {}
+            NodeDeletionResult::NodeDeleted => {
+                // trie is empty, insert the null node on top
+                self.nodes[0] = DiffTrieNode::Null;
+            }
+            // orphan becomes head
+            NodeDeletionResult::BranchBelowRemovedWithOneChild {
+                child_nibble: orphan_nibble,
+                child_ptr: orphan_ptr,
+            } => {
+                match &self.nodes[orphan_ptr] {
+                    DiffTrieNode::Leaf {
+                        key: orphan_key,
+                        value,
+                    } => {
+                        let value = value.clone();
+                        // leaf eats nibble
+                        let new_leaf_key = self.merge_keys(0..0, orphan_nibble, orphan_key.clone());
+                        self.nodes[0] = DiffTrieNode::Leaf {
+                            key: new_leaf_key,
+                            value,
+                        };
+                    }
+                    DiffTrieNode::Extension {
+                        key: orphan_key,
+                        next_node,
+                    } => {
+                        let next_node = *next_node;
+                        let new_ext_key = self.merge_keys(0..0, orphan_nibble, orphan_key.clone());
+                        self.nodes[0] = DiffTrieNode::Extension {
+                            key: new_ext_key,
+                            next_node,
+                        }
+                    }
+                    DiffTrieNode::Branch { .. } => {
+                        let new_ext_key = self.insert_key(&[orphan_nibble]);
+                        self.nodes[0] = DiffTrieNode::Extension {
+                            key: new_ext_key,
+                            next_node: orphan_ptr,
+                        }
+                    }
+                    DiffTrieNode::Null => unreachable!(),
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn rlp_encode_node(&mut self, node_idx: usize) {
