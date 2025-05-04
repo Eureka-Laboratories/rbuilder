@@ -21,11 +21,11 @@ fn insert_nodes(c: &mut Criterion) {
 
     let mut trie = DODiffTrie::new_empty();
     trie.reserve(15_000);
-    let nibble_keys = keys.iter().map(|k| Nibbles::unpack(k)).collect::<Vec<_>>();
+    // let nibble_keys = keys.iter().map(|k| Nibbles::unpack(k)).collect::<Vec<_>>();
     c.bench_function("insert_nodes_do_trie", |b| {
         b.iter(|| {
             trie.clear_empty();
-            for (key, value) in nibble_keys.iter().zip(values.iter()) {
+            for (key, value) in keys.iter().zip(values.iter()) {
                 trie.insert(key, value);
             }
         })

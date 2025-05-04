@@ -1,10 +1,6 @@
+use std::ops::Range;
+
 use reth_trie::Nibbles;
-
-use crate::utils::{extract_prefix_and_suffix, strip_first_nibble_mut};
-
-type Ptr = u32;
-
-type Idx = u32;
 
 #[derive(Debug, Default)]
 pub struct DODiffTrie {
@@ -13,26 +9,23 @@ pub struct DODiffTrie {
     nodes: Vec<DiffTrieNode>,
 
     values: Vec<u8>,
-    keys: Vec<Nibbles>,
-    branch_node_children: Vec<[Ptr; 16]>, // 0 means child is empty
-
-    // scratchpad
-    current_node: Idx,
-    current_path: Nibbles,
-    path_left: Nibbles,
-
-    prefix: Nibbles,
-    suffix1: Nibbles,
-    suffix2: Nibbles,
-    nibble1: u8,
-    nibble2: u8,
+    keys: Vec<u8>,
+    branch_node_children: Vec<[usize; 16]>, // 0 means child is empty
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum DiffTrieNode {
-    Leaf { key: Idx, value: Idx },
-    Extension { key: Idx, next_node: Ptr },
-    Branch { children: Idx },
+    Leaf {
+        key: Range<usize>,
+        value: Range<usize>,
+    },
+    Extension {
+        key: Range<usize>,
+        next_node: usize,
+    },
+    Branch {
+        children: usize,
+    },
     Null,
 }
 
@@ -44,55 +37,52 @@ impl DODiffTrie {
     }
 
     pub fn reserve(&mut self, len: usize) {
-	self.hashed_nodes.reserve(len);
-	self.rlp_ptrs.reserve(len);
-	self.nodes.reserve(len);
-	self.keys.reserve(len);
-	self.branch_node_children.reserve(len);
+        self.hashed_nodes.reserve(len);
+        self.rlp_ptrs.reserve(len);
+        self.nodes.reserve(len);
+        self.keys.reserve(len);
+        self.branch_node_children.reserve(len);
     }
 
     pub fn clear_empty(&mut self) {
         self.clear();
+        self.push_node(DiffTrieNode::Null);
+    }
+
+    fn push_node(&mut self, node: DiffTrieNode) -> usize {
+        let idx = self.nodes.len();
+        self.nodes.push(node);
         self.hashed_nodes.push(false);
         self.rlp_ptrs.push(Default::default());
-        self.nodes.push(DiffTrieNode::Null);
-    }
-
-    fn copy_value(&mut self, value: &[u8]) -> Idx {
-        let idx = self.values.len();
-        let size = value.len();
-        self.values.extend_from_slice(&size.to_be_bytes());
-        self.values.extend_from_slice(value);
-        idx as Idx
-    }
-
-    fn insert_key(&mut self, key: Nibbles) -> Idx {
-        let idx = self.keys.len() as Idx;
-        self.keys.push(key);
         idx
     }
 
-    fn copy_or_overwrite_value(&mut self, _old_value_idx: Idx, value: &[u8]) -> Idx {
-        self.copy_value(value)
+    fn copy_value(&mut self, value: &[u8]) -> Range<usize> {
+        let range = self.values.len()..self.values.len() + value.len();
+        self.values.extend_from_slice(value);
+        range
     }
 
-    fn create_branch_children(&mut self) -> Idx {
-        let idx = self.branch_node_children.len() as Idx;
+    fn insert_key(&mut self, key: &[u8]) -> Range<usize> {
+        let range = self.keys.len()..self.keys.len() + key.len();
+        self.keys.extend_from_slice(key);
+        range
+    }
+
+    fn copy_or_overwrite_value(&mut self, old_value: Range<usize>, value: &[u8]) -> Range<usize> {
+        if old_value.len() >= value.len() {
+            let new_range = old_value.start..value.len();
+            self.values[old_value].copy_from_slice(value);
+            new_range
+        } else {
+            self.copy_value(value)
+        }
+    }
+
+    fn create_branch_children(&mut self) -> usize {
+        let idx = self.branch_node_children.len();
         self.branch_node_children.push(Default::default());
         idx
-    }
-
-    fn extract_prefix_and_suffix(&mut self, key: Idx) {
-        let (pref, mut suff1, mut suff2) =
-            extract_prefix_and_suffix(&self.path_left, &self.keys[key as usize]);
-        let n1 = strip_first_nibble_mut(&mut suff1);
-        let n2 = strip_first_nibble_mut(&mut suff2);
-
-        self.prefix = pref;
-        self.suffix1 = suff1;
-        self.suffix2 = suff2;
-        self.nibble1 = n1;
-        self.nibble2 = n2;
     }
 
     pub fn clear(&mut self) {
@@ -104,56 +94,70 @@ impl DODiffTrie {
         self.nodes.clear();
     }
 
-    pub fn insert(&mut self, key: &Nibbles, insert_value: &[u8]) {
-        self.current_node = 0;
-        self.current_path.clear();
-        self.path_left = key.clone();
+    // return prefix (as part of path_left, stripped nibble of suffix 1, suffix 1 as part of path_left, stripped nibbble from suffix2, suffix2 as part of key stored)
+    fn extract_prefix_and_suffix<'a>(
+        &self,
+        path_left: &'a [u8],
+        key: Range<usize>,
+    ) -> (&'a [u8], u8, &'a [u8], u8, Range<usize>) {
+        let p = mismatch(path_left, &self.keys[key.clone()]);
+        let prefix = &path_left[..p];
+        let n1 = path_left[p];
+        let suff1 = &path_left[p + 1..];
+        let n2 = self.keys[key.start + p];
+        let suff2 = key.start + p + 1..key.end;
+        (prefix, n1, suff1, n2, suff2)
+    }
+
+    pub fn insert(&mut self, key: &[u8], insert_value: &[u8]) {
+        let n = Nibbles::unpack(key);
+        let ins_key = n.as_slice();
+        let mut current_node = 0;
+
+        let mut path_walked = 0;
 
         loop {
-            let node = *self
+            let node = self
                 .nodes
-                .get(self.current_node as usize)
-                .expect("node not found");
-            self.hashed_nodes[self.current_node as usize] = false;
+                .get(current_node)
+                .expect("node not found")
+                .clone();
+            self.hashed_nodes[current_node] = false;
             match node {
                 DiffTrieNode::Branch { children } => {
-                    let n = strip_first_nibble_mut(&mut self.path_left);
-                    self.current_path.push_unchecked(n);
-                    if self.branch_node_children[children as usize][n as usize] != 0 {
-                        self.current_node =
-                            self.branch_node_children[children as usize][n as usize];
+                    let n = ins_key[path_walked] as usize;
+                    path_walked += 1;
+                    if self.branch_node_children[children][n] != 0 {
+                        current_node = self.branch_node_children[children][n];
                         continue;
                     } else {
-                        let leaf_ptr = self.nodes.len() as Ptr;
-                        let tmp_key = self.insert_key(self.path_left.clone());
-                        let tmp_value = self.copy_value(insert_value);
-                        self.nodes.push(DiffTrieNode::Leaf {
-                            key: tmp_key,
-                            value: tmp_value,
+                        let new_leaf_key = self.insert_key(&ins_key[path_walked..]);
+                        let leaf_value = self.copy_value(insert_value);
+                        let leaf_ptr = self.push_node(DiffTrieNode::Leaf {
+                            key: new_leaf_key,
+                            value: leaf_value,
                         });
-                        self.rlp_ptrs.push(Default::default());
-                        self.hashed_nodes.push(false);
-                        self.branch_node_children[children as usize][n as usize] = leaf_ptr;
+                        self.branch_node_children[children][n] = leaf_ptr;
                     }
                 }
                 DiffTrieNode::Extension { key, next_node } => {
-                    if self.path_left.starts_with(&self.keys[key as usize]) {
-                        let ext_key_len = self.keys[key as usize].len();
-                        self.current_path
-                            .extend_from_slice_unchecked(&self.path_left[..ext_key_len]);
-                        self.path_left.as_mut_vec_unchecked().drain(..ext_key_len);
-                        self.current_node = next_node;
+                    if ins_key[path_walked..].starts_with(&self.keys[key.clone()]) {
+                        path_walked += key.len();
+                        current_node = next_node;
                         continue;
                     }
-                    self.extract_prefix_and_suffix(key);
 
-                    let has_extension_node = !self.prefix.is_empty();
+                    let (prefix, n1, suff1, n2, suff2) =
+                        self.extract_prefix_and_suffix(&ins_key[path_walked..], key);
+
+                    let has_extension_node = !prefix.is_empty();
                     if has_extension_node {
-                        let ext_key = self.insert_key(self.prefix.clone());
-                        let next_node = self.nodes.len() as Ptr;
-                        self.nodes[self.current_node as usize] = DiffTrieNode::Extension {
-                            key: ext_key,
-                            next_node,
+                        let new_ext_key = self.insert_key(prefix);
+                        // next node will branch node that we will push below
+                        let ext_next_node = self.nodes.len();
+                        self.nodes[current_node] = DiffTrieNode::Extension {
+                            key: new_ext_key,
+                            next_node: ext_next_node,
                         };
                     };
                     let branch_children = self.create_branch_children();
@@ -161,60 +165,53 @@ impl DODiffTrie {
                         children: branch_children,
                     };
                     if has_extension_node {
-                        self.nodes.push(branch_node);
-                        self.rlp_ptrs.push(Default::default());
-                        self.hashed_nodes.push(false);
+                        self.push_node(branch_node);
                     } else {
-                        self.nodes[self.current_node as usize] = branch_node;
+                        self.nodes[current_node] = branch_node;
                     }
-                    let leaf_ptr = self.nodes.len();
-                    let tmp_key = self.insert_key(self.suffix1.clone());
-                    let tmp_value = self.copy_value(insert_value);
-                    self.nodes.push(DiffTrieNode::Leaf {
-                        key: tmp_key,
-                        value: tmp_value,
-                    });
-                    self.rlp_ptrs.push(Default::default());
-                    self.hashed_nodes.push(false);
 
-                    let branch_child = if !self.suffix2.is_empty() {
+                    let new_leaf_key = self.insert_key(suff1);
+                    let new_leaf_value = self.copy_value(insert_value);
+
+                    let new_leaf_ptr = self.push_node(DiffTrieNode::Leaf {
+                        key: new_leaf_key,
+                        value: new_leaf_value,
+                    });
+
+                    let branch_child = if !suff2.is_empty() {
                         next_node
                     } else {
-                        let new_ext_ptr = self.nodes.len();
-                        let tmp_key = self.insert_key(self.suffix2.clone());
-                        self.nodes.push(DiffTrieNode::Extension {
-                            key: tmp_key,
+                        self.push_node(DiffTrieNode::Extension {
+                            key: suff2,
                             next_node,
-                        });
-			self.rlp_ptrs.push(Default::default());
-			self.hashed_nodes.push(false);
-                        new_ext_ptr as Ptr
+                        })
                     };
 
-                    self.branch_node_children[branch_children as usize][self.nibble1 as usize] =
-                        leaf_ptr as Ptr;
-                    self.branch_node_children[branch_children as usize][self.nibble2 as usize] =
-                        branch_child as Ptr;
+                    self.branch_node_children[branch_children][n1 as usize] = new_leaf_ptr;
+                    self.branch_node_children[branch_children][n2 as usize] = branch_child;
                 }
                 DiffTrieNode::Leaf { key, value } => {
-                    if self.keys[key as usize] == self.path_left {
+                    if &self.keys[key.clone()] == &ins_key[path_walked..] {
                         // update leaf in place
                         let new_value = self.copy_or_overwrite_value(value, insert_value);
-                        self.nodes[self.current_node as usize] = DiffTrieNode::Leaf {
-                            key,
+                        self.nodes[current_node] = DiffTrieNode::Leaf {
+                            key: key.clone(),
                             value: new_value,
                         };
+                        break;
                     }
 
-                    self.extract_prefix_and_suffix(key);
+                    let (prefix, n1, suff1, n2, suff2) =
+                        self.extract_prefix_and_suffix(&ins_key[path_walked..], key);
 
-                    let has_extension_node = !self.prefix.is_empty();
+                    let has_extension_node = !prefix.is_empty();
                     if has_extension_node {
-                        let ext_key = self.insert_key(self.prefix.clone());
-                        let next_node = self.nodes.len() as Ptr;
-                        self.nodes[self.current_node as usize] = DiffTrieNode::Extension {
-                            key: ext_key,
-                            next_node,
+                        let new_ext_key = self.insert_key(prefix);
+                        // next node will branch node that we will push below
+                        let ext_next_node = self.nodes.len();
+                        self.nodes[current_node] = DiffTrieNode::Extension {
+                            key: new_ext_key,
+                            next_node: ext_next_node,
                         };
                     };
                     let branch_children = self.create_branch_children();
@@ -222,45 +219,52 @@ impl DODiffTrie {
                         children: branch_children,
                     };
                     if has_extension_node {
-                        self.nodes.push(branch_node);
-                        self.rlp_ptrs.push(Default::default());
-                        self.hashed_nodes.push(false);
+                        self.push_node(branch_node);
                     } else {
-                        self.nodes[self.current_node as usize] = branch_node;
+                        self.nodes[current_node] = branch_node;
                     }
-                    let first_leaf_ptr = self.nodes.len();
-                    let tmp_key = self.insert_key(self.suffix1.clone());
-                    let tmp_value = self.copy_value(insert_value);
-                    self.nodes.push(DiffTrieNode::Leaf {
-                        key: tmp_key,
-                        value: tmp_value,
+
+                    let first_leaf_key = self.insert_key(suff1);
+                    let first_leaf_value = self.copy_value(insert_value);
+                    let first_leaf_ptr = self.push_node(DiffTrieNode::Leaf {
+                        key: first_leaf_key,
+                        value: first_leaf_value,
                     });
-                    self.rlp_ptrs.push(Default::default());
-                    self.hashed_nodes.push(false);
-                    let second_leaf_ptr = self.nodes.len();
-                    let tmp_key = self.insert_key(self.suffix2.clone());
-                    let tmp_value = value;
-                    self.nodes.push(DiffTrieNode::Leaf {
-                        key: tmp_key,
-                        value: tmp_value,
+
+                    let second_leaf_key = suff2;
+                    let second_leaf_value = value;
+                    let second_leaf_ptr = self.push_node(DiffTrieNode::Leaf {
+                        key: second_leaf_key,
+                        value: second_leaf_value,
                     });
-                    self.rlp_ptrs.push(Default::default());
-                    self.hashed_nodes.push(false);
-                    self.branch_node_children[branch_children as usize][self.nibble1 as usize] =
-                        first_leaf_ptr as Ptr;
-                    self.branch_node_children[branch_children as usize][self.nibble2 as usize] =
-                        second_leaf_ptr as Ptr;
+
+                    self.branch_node_children[branch_children][n1 as usize] = first_leaf_ptr;
+                    self.branch_node_children[branch_children][n2 as usize] = second_leaf_ptr;
                 }
                 DiffTrieNode::Null => {
-                    let tmp_key = self.insert_key(self.path_left.clone());
-                    let tmp_value = self.copy_value(insert_value);
-                    self.nodes[self.current_node as usize] = DiffTrieNode::Leaf {
-                        key: tmp_key,
-                        value: tmp_value,
+                    let new_leaf_key = self.insert_key(&ins_key[path_walked..]);
+                    let new_leaf_value = self.copy_value(insert_value);
+                    self.nodes[current_node as usize] = DiffTrieNode::Leaf {
+                        key: new_leaf_key,
+                        value: new_leaf_value,
                     };
                 }
             }
             break;
         }
     }
+}
+
+pub fn mismatch(xs: &[u8], ys: &[u8]) -> usize {
+    mismatch_chunks::<8>(xs, ys)
+}
+
+fn mismatch_chunks<const N: usize>(xs: &[u8], ys: &[u8]) -> usize {
+    let off = std::iter::zip(xs.chunks_exact(N), ys.chunks_exact(N))
+        .take_while(|(x, y)| x == y)
+        .count()
+        * N;
+    off + std::iter::zip(&xs[off..], &ys[off..])
+        .take_while(|(x, y)| x == y)
+        .count()
 }
