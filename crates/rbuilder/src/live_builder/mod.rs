@@ -187,10 +187,25 @@ where
         }
 
         let orderpool_subscriber = {
+            // plugins: let plugins extend the extra RPC router before server boot
+            let mut extra_rpc = self.extra_rpc;
+            #[cfg(feature = "plugins")]
+            {
+                for h in plugin_registry.rpc_hooks() {
+                    match h.extend(extra_rpc) {
+                        Ok(extended) => {
+                            info!(target = "plugins", hook = h.name(), "rpc module extended");
+                            extra_rpc = extended;
+                        }
+                        Err(err) => warn!(target = "plugins", hook = h.name(), error = ?err, "rpc extension failed"),
+                    }
+                }
+            }
+
             let (handle, sub) = start_orderpool_jobs(
                 self.order_input_config,
                 self.provider.clone(),
-                self.extra_rpc,
+                extra_rpc,
                 self.global_cancellation.clone(),
                 self.orderpool_sender,
                 self.orderpool_receiver,
