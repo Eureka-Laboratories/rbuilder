@@ -56,6 +56,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "plugins")]
+use crate::plugin::PluginRegistry;
+
 #[derive(Debug, Clone)]
 pub struct TimingsConfig {
     /// Time the proposer have to propose a block from the beginning of the
@@ -173,6 +176,16 @@ where
 
         let (header_sender, header_receiver) = mpsc::channel(CLEAN_TASKS_CHANNEL_SIZE);
 
+        // plugins: initialize registry and emit lifecycle start
+        #[cfg(feature = "plugins")]
+        let mut plugin_registry = PluginRegistry::new();
+        #[cfg(feature = "plugins")]
+        {
+            for hook in plugin_registry.lifecycle_hooks() {
+                hook.on_builder_started();
+            }
+        }
+
         let orderpool_subscriber = {
             let (handle, sub) = start_orderpool_jobs(
                 self.order_input_config,
@@ -185,6 +198,20 @@ where
             )
             .await?;
             inner_jobs_handles.push(handle);
+
+            // plugins: notify order input started
+            #[cfg(feature = "plugins")]
+            {
+                for hook in plugin_registry.order_input_hooks() {
+                    let cancel = self.global_cancellation.child_token();
+                    if let Err(err) = hook.on_order_input_started(cancel).await {
+                        warn!(target: "plugins", hook = hook.name(), error = ?err, "order input start failed");
+                    } else {
+                        info!(target: "plugins", hook = hook.name(), "order input started");
+                    }
+                }
+            }
+
             sub
         };
 
@@ -338,6 +365,14 @@ where
                 .await
                 .map_err(|err| warn!(?err, "Job handle await error"))
                 .unwrap_or_default();
+        }
+
+        // plugins: emit lifecycle stop
+        #[cfg(feature = "plugins")]
+        {
+            for hook in plugin_registry.lifecycle_hooks() {
+                hook.on_builder_stopped();
+            }
         }
         Ok(())
     }

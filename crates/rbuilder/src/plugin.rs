@@ -39,7 +39,10 @@ pub trait LifecycleHook: Named + Send + Sync {
 #[cfg(feature = "plugins")]
 pub trait RpcHook: Named + Send + Sync {
     type Ctx;
-    fn extend(&self, module: jsonrpsee::RpcModule<Self::Ctx>) -> eyre::Result<jsonrpsee::RpcModule<Self::Ctx>>;
+    fn extend(
+        &self,
+        module: jsonrpsee::RpcModule<Self::Ctx>,
+    ) -> eyre::Result<jsonrpsee::RpcModule<Self::Ctx>>;
 }
 
 /// Simple, typed plugin registry.
@@ -52,13 +55,27 @@ pub struct PluginRegistry {
 }
 
 impl PluginRegistry {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-    pub fn register_order_input_hook(&mut self, hook: Arc<dyn OrderInputHook>) { self.order_input_hooks.push(hook); }
-    pub fn register_bid_feed_hook(&mut self, hook: Arc<dyn BidFeedHook>) { self.bid_feed_hooks.push(hook); }
-    pub fn register_lifecycle_hook(&mut self, hook: Arc<dyn LifecycleHook>) { self.lifecycle_hooks.push(hook); }
+    pub fn register_order_input_hook(&mut self, hook: Arc<dyn OrderInputHook>) {
+        self.order_input_hooks.push(hook);
+    }
+    pub fn register_bid_feed_hook(&mut self, hook: Arc<dyn BidFeedHook>) {
+        self.bid_feed_hooks.push(hook);
+    }
+    pub fn register_lifecycle_hook(&mut self, hook: Arc<dyn LifecycleHook>) {
+        self.lifecycle_hooks.push(hook);
+    }
 
-    pub fn order_input_hooks(&self) -> &[Arc<dyn OrderInputHook>] { &self.order_input_hooks }
-    pub fn lifecycle_hooks(&self) -> &[Arc<dyn LifecycleHook>] { &self.lifecycle_hooks }
-    pub fn bid_feed_hooks(&self) -> &[Arc<dyn BidFeedHook>] { &self.bid_feed_hooks }
+    pub fn order_input_hooks(&self) -> &[Arc<dyn OrderInputHook>] {
+        &self.order_input_hooks
+    }
+    pub fn lifecycle_hooks(&self) -> &[Arc<dyn LifecycleHook>] {
+        &self.lifecycle_hooks
+    }
+    pub fn bid_feed_hooks(&self) -> &[Arc<dyn BidFeedHook>] {
+        &self.bid_feed_hooks
+    }
 }
