@@ -149,6 +149,7 @@ criterion = { version = "0.5.1", features = ["html_reports", "async_tokio"] }
 # TODO: remove?
 optimism = []
 redact-sensitive = []
+plugins = []
 
 [[bench]]
 name = "bench_main"

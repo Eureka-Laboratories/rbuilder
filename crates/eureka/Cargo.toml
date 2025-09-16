@@ -1,0 +1,22 @@
+[package]
+name = "eureka"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+
+[lib]
+name = "eureka"
+path = "src/lib.rs"
+
+[features]
+plugins = []
+
+[dependencies]
+eyre = { version = "0.6" }
+tracing = { version = "0.1" }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+async-trait = "0.1"
+
+# Depend on core to use its plugin traits
+rbuilder = { path = "../rbuilder" }

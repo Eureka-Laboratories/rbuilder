@@ -4162,6 +4162,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0939f82868b77ef93ce3c3c3daf2b3c526b456741da5a1a4559e590965b6026b"
 
 [[package]]
+name = "eureka"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "eyre",
+ "rbuilder",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "event-listener"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14369,6 +14381,8 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
+ "hashbrown 0.14.5",
  "pin-project-lite",
  "slab",
  "tokio",
