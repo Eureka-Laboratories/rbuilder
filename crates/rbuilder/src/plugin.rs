@@ -93,3 +93,10 @@ impl PluginRegistry {
         &self.rpc_hooks
     }
 }
+
+impl Default for PluginRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
