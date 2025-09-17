@@ -175,9 +175,21 @@ where
 
         let (header_sender, header_receiver) = mpsc::channel(CLEAN_TASKS_CHANNEL_SIZE);
 
-        let plugin_registry = PluginRegistry::new();
+        let mut plugin_registry = PluginRegistry::new();
+        // Register built-in SERVO plugin (NNG wiring handled in config.rs)
+        plugin_registry.register_bid_feed_hook(Arc::new(crate::plugins::servo_nng::ServoNngBidFeedPlugin::from_env()));
+
         for hook in plugin_registry.lifecycle_hooks() {
             hook.on_builder_started();
+        }
+        // Start bid feed hooks (plugins) if any are registered
+        for hook in plugin_registry.bid_feed_hooks() {
+            let cancel = self.global_cancellation.child_token();
+            if let Err(err) = hook.start(cancel) {
+                warn!(target: "plugins", hook = hook.name(), error = ?err, "bid feed start failed");
+            } else {
+                info!(target: "plugins", hook = hook.name(), "bid feed started");
+            }
         }
 
         let orderpool_subscriber = {

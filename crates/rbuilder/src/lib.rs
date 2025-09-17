@@ -11,3 +11,4 @@ pub mod telemetry;
 pub mod utils;
 
 pub mod plugin;
+pub mod plugins;
