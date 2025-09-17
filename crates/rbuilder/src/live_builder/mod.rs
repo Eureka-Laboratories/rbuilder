@@ -56,7 +56,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-#[cfg(feature = "plugins")]
 use crate::plugin::PluginRegistry;
 
 #[derive(Debug, Clone)]
@@ -177,30 +176,18 @@ where
         let (header_sender, header_receiver) = mpsc::channel(CLEAN_TASKS_CHANNEL_SIZE);
 
         // plugins: initialize registry and emit lifecycle start
-        #[cfg(feature = "plugins")]
         let mut plugin_registry = PluginRegistry::new();
-        #[cfg(feature = "plugins")]
-        {
-            for hook in plugin_registry.lifecycle_hooks() {
-                hook.on_builder_started();
-            }
+        for hook in plugin_registry.lifecycle_hooks() {
+            hook.on_builder_started();
         }
+
+        // Register Eureka-provided RPC hooks (TOBA) into the registry
+        eureka::toba::register_toba_hook(&mut plugin_registry);
 
         let orderpool_subscriber = {
             // plugins: let plugins extend the extra RPC router before server boot
             let mut extra_rpc = self.extra_rpc;
-            #[cfg(feature = "plugins")]
-            {
-                for h in plugin_registry.rpc_hooks() {
-                    match h.extend(extra_rpc) {
-                        Ok(extended) => {
-                            info!(target = "plugins", hook = h.name(), "rpc module extended");
-                            extra_rpc = extended;
-                        }
-                        Err(err) => warn!(target = "plugins", hook = h.name(), error = ?err, "rpc extension failed"),
-                    }
-                }
-            }
+            // plugin RPC hooks are now always available via start_orderpool_jobs
 
             let (handle, sub) = start_orderpool_jobs(
                 self.order_input_config,
@@ -210,20 +197,18 @@ where
                 self.orderpool_sender,
                 self.orderpool_receiver,
                 header_receiver,
+                plugin_registry.rpc_hooks().to_vec(),
             )
             .await?;
             inner_jobs_handles.push(handle);
 
             // plugins: notify order input started
-            #[cfg(feature = "plugins")]
-            {
-                for hook in plugin_registry.order_input_hooks() {
-                    let cancel = self.global_cancellation.child_token();
-                    if let Err(err) = hook.on_order_input_started(cancel).await {
-                        warn!(target: "plugins", hook = hook.name(), error = ?err, "order input start failed");
-                    } else {
-                        info!(target: "plugins", hook = hook.name(), "order input started");
-                    }
+            for hook in plugin_registry.order_input_hooks() {
+                let cancel = self.global_cancellation.child_token();
+                if let Err(err) = hook.on_order_input_started(cancel).await {
+                    warn!(target: "plugins", hook = hook.name(), error = ?err, "order input start failed");
+                } else {
+                    info!(target: "plugins", hook = hook.name(), "order input started");
                 }
             }
 
@@ -383,11 +368,8 @@ where
         }
 
         // plugins: emit lifecycle stop
-        #[cfg(feature = "plugins")]
-        {
-            for hook in plugin_registry.lifecycle_hooks() {
-                hook.on_builder_stopped();
-            }
+        for hook in plugin_registry.lifecycle_hooks() {
+            hook.on_builder_stopped();
         }
         Ok(())
     }

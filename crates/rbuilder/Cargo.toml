@@ -118,6 +118,7 @@ async-trait = "0.1.80"
 eth-sparse-mpt.workspace = true
 bid-scraper.workspace = true
 sysperf.workspace = true
+eureka = { path = "../eureka" }
 crossbeam = "0.8.4"
 parking_lot.workspace = true
 dashmap = "6.1.0"
@@ -149,7 +150,6 @@ criterion = { version = "0.5.1", features = ["html_reports", "async_tokio"] }
 # TODO: remove?
 optimism = []
 redact-sensitive = []
-plugins = []
 
 [[bench]]
 name = "bench_main"

@@ -1,5 +1,5 @@
 //! Core plugin traits and a simple registry.
-//! Compiled only when the `plugins` feature is enabled.
+//! Always compiled; provides a minimal, typed plugin surface.
 
 #![allow(dead_code)]
 
@@ -36,12 +36,15 @@ pub trait LifecycleHook: Named + Send + Sync {
 }
 
 /// Optional RPC extension hook. Implementations can extend the JSON-RPC module.
-#[cfg(feature = "plugins")]
+pub struct RpcDeps {
+    pub results:
+        tokio::sync::mpsc::Sender<crate::live_builder::order_input::ReplaceableOrderPoolCommand>,
+    pub timeout: std::time::Duration,
+    pub cancel: tokio_util::sync::CancellationToken,
+}
+
 pub trait RpcHook: Named + Send + Sync {
-    fn extend(
-        &self,
-        module: jsonrpsee::RpcModule<()>,
-    ) -> eyre::Result<jsonrpsee::RpcModule<()>>;
+    fn register(&self, module: &mut jsonrpsee::RpcModule<()>, deps: RpcDeps) -> eyre::Result<()>;
 }
 
 /// Simple, typed plugin registry.
@@ -51,7 +54,6 @@ pub struct PluginRegistry {
     order_input_hooks: Vec<Arc<dyn OrderInputHook>>, // plugins registry
     bid_feed_hooks: Vec<Arc<dyn BidFeedHook>>,       // plugins registry
     lifecycle_hooks: Vec<Arc<dyn LifecycleHook>>,    // plugins registry
-    #[cfg(feature = "plugins")]
     rpc_hooks: Vec<Arc<dyn RpcHook>>,                // plugins registry
 }
 
@@ -67,13 +69,12 @@ impl PluginRegistry {
         self.bid_feed_hooks.push(hook);
     }
     pub fn register_lifecycle_hook(&mut self, hook: Arc<dyn LifecycleHook>) {
-    self.lifecycle_hooks.push(hook);
+        self.lifecycle_hooks.push(hook);
     }
-       #[cfg(feature = "plugins")]
     pub fn register_rpc_hook(&mut self, hook: Arc<dyn RpcHook>) {
-    self.rpc_hooks.push(hook);
+        self.rpc_hooks.push(hook);
     }
-    
+
     pub fn order_input_hooks(&self) -> &[Arc<dyn OrderInputHook>] {
         &self.order_input_hooks
     }
@@ -83,7 +84,6 @@ impl PluginRegistry {
     pub fn bid_feed_hooks(&self) -> &[Arc<dyn BidFeedHook>] {
         &self.bid_feed_hooks
     }
-    #[cfg(feature = "plugins")]
     pub fn rpc_hooks(&self) -> &[Arc<dyn RpcHook>] {
         &self.rpc_hooks
     }

@@ -10,5 +10,4 @@ pub mod roothash;
 pub mod telemetry;
 pub mod utils;
 
-#[cfg(feature = "plugins")]
 pub mod plugin;

@@ -22,6 +22,7 @@ use crate::{
 use alloy_consensus::Header;
 use jsonrpsee::RpcModule;
 use parking_lot::Mutex;
+use std::sync::Arc as StdArc;
 use std::{net::Ipv4Addr, path::PathBuf, sync::Arc, time::Duration};
 use std::{path::Path, time::Instant};
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -107,6 +108,8 @@ pub struct OrderInputConfig {
     pub input_channel_buffer_size: usize,
     /// See [OrderPool::time_to_keep_mempool_txs]
     time_to_keep_mempool_txs: Duration,
+    /// Enable TOBA RPC endpoint (eth_sendRawTransactionToba)
+    pub enable_toba_rpc: bool,
 }
 pub const DEFAULT_SERVE_MAX_CONNECTIONS: u32 = 4096;
 pub const DEFAULT_RESULTS_CHANNEL_TIMEOUT: Duration = Duration::from_millis(50);
@@ -123,6 +126,7 @@ impl OrderInputConfig {
         results_channel_timeout: Duration,
         input_channel_buffer_size: usize,
         time_to_keep_mempool_txs: Duration,
+        enable_toba_rpc: bool,
     ) -> Self {
         Self {
             ignore_cancellable_orders,
@@ -134,6 +138,7 @@ impl OrderInputConfig {
             results_channel_timeout,
             input_channel_buffer_size,
             time_to_keep_mempool_txs,
+            enable_toba_rpc,
         }
     }
 
@@ -157,6 +162,7 @@ impl OrderInputConfig {
             results_channel_timeout: Duration::from_millis(50),
             input_channel_buffer_size: 10_000,
             time_to_keep_mempool_txs: Duration::from_secs(config.time_to_keep_mempool_txs_secs),
+            enable_toba_rpc: config.enable_toba_rpc,
         })
     }
 
@@ -211,6 +217,7 @@ pub async fn start_orderpool_jobs<P>(
     order_sender: mpsc::Sender<ReplaceableOrderPoolCommand>,
     order_receiver: mpsc::Receiver<ReplaceableOrderPoolCommand>,
     header_receiver: mpsc::Receiver<Header>,
+    rpc_hooks: Vec<StdArc<dyn crate::plugin::RpcHook>>,
 ) -> eyre::Result<(JoinHandle<()>, OrderPoolSubscriber)>
 where
     P: StateProviderFactory + 'static,
@@ -239,6 +246,8 @@ where
         order_sender.clone(),
         extra_rpc,
         global_cancel.clone(),
+        #[cfg(feature = "plugins")]
+        rpc_hooks,
     )
     .await?;
 

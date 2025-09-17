@@ -69,6 +69,7 @@ pub async fn start_server_accepting_bundles(
     results: mpsc::Sender<ReplaceableOrderPoolCommand>,
     extra_rpc: RpcModule<()>,
     global_cancel: CancellationToken,
+    rpc_hooks: Vec<std::sync::Arc<dyn crate::plugin::RpcHook>>,
 ) -> eyre::Result<JoinHandle<()>> {
     let addr = SocketAddr::V4(SocketAddrV4::new(config.server_ip, config.server_port));
     let timeout = config.results_channel_timeout;
@@ -80,6 +81,18 @@ pub async fn start_server_accepting_bundles(
         .await?;
 
     let mut module = RpcModule::new(());
+
+    // Allow plugins to register RPC before core handlers
+    {
+        let deps = crate::plugin::RpcDeps {
+            results: results.clone(),
+            timeout,
+            cancel: global_cancel.clone(),
+        };
+        for h in rpc_hooks {
+            h.register(&mut module, deps.clone())?;
+        }
+    }
 
     let results_clone = results.clone();
     register_metered_async_method(&mut module, ETH_SEND_BUNDLE, move |params, _| {

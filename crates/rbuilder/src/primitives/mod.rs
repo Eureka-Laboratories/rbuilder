@@ -45,6 +45,8 @@ use uuid::Uuid;
 pub struct Metadata {
     pub received_at_timestamp: time::OffsetDateTime,
     pub refund_identity: Option<Address>,
+    /// True when the tx was submitted via TOBA (eth_sendRawTransactionToba)
+    pub is_toba: bool,
 }
 
 impl Metadata {
@@ -52,6 +54,7 @@ impl Metadata {
         Self {
             received_at_timestamp: time::OffsetDateTime::now_utc(),
             refund_identity: None,
+            is_toba: false,
         }
     }
 }
@@ -59,7 +62,8 @@ impl Metadata {
 impl InMemorySize for Metadata {
     fn size(&self) -> usize {
         mem::size_of::<time::OffsetDateTime>() + // received_at_timestamp
-            mem::size_of::<Option<Address>>() // refund_identity
+            mem::size_of::<Option<Address>>() + // refund_identity
+            mem::size_of::<bool>() // is_toba
     }
 }
 
@@ -915,6 +919,9 @@ impl MempoolTx {
     pub fn new(tx_with_blobs: TransactionSignedEcRecoveredWithBlobs) -> Self {
         Self { tx_with_blobs }
     }
+    pub fn is_toba(&self) -> bool {
+        self.tx_with_blobs.metadata.is_toba
+    }
 }
 
 impl InMemorySize for MempoolTx {
@@ -1102,6 +1109,14 @@ impl Order {
             Order::Bundle(bundle) => &bundle.metadata,
             Order::Tx(tx) => &tx.tx_with_blobs.metadata,
             Order::ShareBundle(bundle) => &bundle.metadata,
+        }
+    }
+
+    /// True if this order is a TOBA submission (applies to single tx orders only)
+    pub fn is_toba(&self) -> bool {
+        match self {
+            Order::Tx(tx) => tx.is_toba(),
+            _ => false,
         }
     }
 }
