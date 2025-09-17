@@ -9150,6 +9150,7 @@ dependencies = [
  "reth-trie-parallel",
  "revm",
  "revm-inspectors",
+ "runng",
  "secp256k1 0.30.0",
  "serde",
  "serde_json",

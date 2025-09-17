@@ -56,9 +56,11 @@ impl ScrapedBidsObs for ScrapedBids2BlockBidWithStatsObs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, BlockHash, U256};
+    use alloy_primitives::{BlockHash, U256};
     use bid_scraper::types::PublisherType;
     use std::sync::Mutex;
+    #[cfg(feature = "nng-integration-test")]
+    use bid_scraper::bid_scraper_client::run_nng_subscriber_with_retries;
 
     #[derive(Debug)]
     struct TestSink {
@@ -101,5 +103,74 @@ mod tests {
         assert_eq!(got[0].bid.slot_number, 123);
         assert_eq!(got[0].bid.block_number, 456);
         assert_eq!(got[0].bid.value, U256::from(12345u64));
+    }
+
+    // Feature-gated NNG integration test. Requires `--features nng-integration-test`.
+    #[cfg(feature = "nng-integration-test")]
+    #[tokio::test]
+    async fn nng_end_to_end_forwards_bid() {
+        use runng::{factory::latest::ProtocolFactory, Listen, protocol::Pub0, SendSocket};
+        use tokio_util::sync::CancellationToken;
+
+        // Unique inproc endpoint for isolation
+        let endpoint = format!("inproc://rbuilder-test-{}", std::process::id());
+
+        // Create NNG publisher
+        let factory = ProtocolFactory::default();
+        let mut pub_sock: Pub0 = factory.publisher_open().expect("pub open");
+        pub_sock.listen(&endpoint).expect("pub listen");
+
+        // Prepare sink and spawn subscriber
+        let sink = Arc::new(TestSink { seen: Mutex::new(Vec::new()) });
+        let obs = Arc::new(ScrapedBids2BlockBidWithStatsObs::new(sink.clone()));
+        let cancel = CancellationToken::new();
+        let subscriber = tokio::spawn(async move {
+            run_nng_subscriber_with_retries(
+                obs,
+                cancel,
+                endpoint.clone(),
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(1),
+            )
+            .await;
+        });
+
+        // Give subscriber time to dial
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Publish a BlockBid over NNG
+        let bid = BlockBid {
+            seen_time: 0.0,
+            publisher_name: "ultrasound-eu".to_string(),
+            publisher_type: PublisherType::UltrasoundWs,
+            relay_time: Some(0.0),
+            relay_name: "ultrasound-eu".to_string(),
+            block_hash: BlockHash::ZERO,
+            parent_hash: BlockHash::ZERO,
+            value: U256::from(77u64),
+            slot_number: 999,
+            block_number: 1000,
+            builder_pubkey: None,
+            extra_data: None,
+            fee_recipient: None,
+            proposer_fee_recipient: None,
+            gas_used: None,
+            optimistic_submission: None,
+        };
+        let payload = serde_json::to_vec(&bid).unwrap();
+        pub_sock.send(&payload).expect("send");
+
+        // Wait for delivery
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Assert sink observed the bid
+        let got = sink.seen.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].bid.slot_number, 999);
+        assert_eq!(got[0].bid.block_number, 1000);
+        assert_eq!(got[0].bid.value, U256::from(77u64));
+
+        drop(pub_sock);
+        subscriber.abort();
     }
 }

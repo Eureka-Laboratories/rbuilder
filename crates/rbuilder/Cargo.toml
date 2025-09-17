@@ -124,6 +124,7 @@ dashmap = "6.1.0"
 tonic = "0.13"
 prost = "0.13"
 prost-types = "0.13"
+runng = { version = "^0.3", optional = true }
 
 # IPC state provider deps
 reipc = { git = "https://github.com/nethermindeth/reipc.git", rev = "3837f3539201f948dd1c2c96a85a60d589feb4c6" }
@@ -149,6 +150,7 @@ criterion = { version = "0.5.1", features = ["html_reports", "async_tokio"] }
 # TODO: remove?
 optimism = []
 redact-sensitive = []
+nng-integration-test = ["dep:runng"]
 
 [[bench]]
 name = "bench_main"
