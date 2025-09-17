@@ -166,7 +166,8 @@ scraped_bids_publisher_url = "tcp://0.0.0.0:5555"
 ## Validation plan
 
 - Unit: verify ScrapedBids2BlockBidWithStatsObs forwards BlockBid to a test implementation of `BlockBidWithStatsObs`.
-- Integration (optional, CI-light): run bid-scraper locally with Ultrasound publishers and rbuilder pointing `scraped_bids_publisher_url` to the same NNG endpoint; assert that bidding service logs receive competition updates.
+- Integration: run bid-scraper locally with Ultrasound publishers and rbuilder pointing `scraped_bids_publisher_url` to the same NNG endpoint; assert that bidding service logs receive competition updates.
+  - In addition, an inproc NNG test runs as part of `rbuilder` to validate the subscriber path end-to-end.
 - Non-goals: re-introducing any `BidValueObs`/`CompetitionBidProvider` interfaces.
 
 ## Acceptance criteria

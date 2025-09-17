@@ -59,7 +59,6 @@ mod tests {
     use alloy_primitives::{BlockHash, U256};
     use bid_scraper::types::PublisherType;
     use std::sync::Mutex;
-    #[cfg(feature = "nng-integration-test")]
     use bid_scraper::bid_scraper_client::run_nng_subscriber_with_retries;
 
     #[derive(Debug)]
@@ -106,7 +105,6 @@ mod tests {
     }
 
     // Feature-gated NNG integration test. Requires `--features nng-integration-test`.
-    #[cfg(feature = "nng-integration-test")]
     #[tokio::test]
     async fn nng_end_to_end_forwards_bid() {
         use runng::{factory::latest::ProtocolFactory, Listen, protocol::Pub0, SendSocket};
