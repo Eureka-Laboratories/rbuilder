@@ -13,23 +13,17 @@ Goal: Port the SERVO integration from ebuilder to upstream rbuilder while replac
 
 ## Architecture change summary
 
-- Add a new `CompetitionBidProvider` implementation that subscribes to bid-scraper’s NNG stream and maintains a small in-process cache keyed by `(block_number, slot_number)`.
-- Wire this provider into live-builder construction when `scraped_bids_publisher_url` is configured.
-- SERVO coordinator code continues to read `latest_bid()` and subscribe as before; no WS logic in rbuilder.
+- Use the new BlockBid flow: do NOT introduce a `CompetitionBidProvider`. Instead, wire the bid-scraper NNG subscriber directly into the bidding service via `BlockBidWithStatsObs`.
+- rbuilder spawns `run_nng_subscriber_with_retries(ScrapedBids2BlockBidWithStatsObs{ obs: bidding_service.clone() }, ...)` when `scraped_bids_publisher_url` is configured, and the bidding service disseminates competition info to active slot bidders.
+- No WS logic in rbuilder; SERVO decisions consume competition via the bidding service’s internal state.
 
 ## Files to add/edit (upstream rbuilder)
 
-- Add: `crates/rbuilder/src/live_builder/block_output/bid_value_source/scraped_nng_source.rs`
-  - Implements a `BidValueSource` + `CompetitionBidProvider` backed by NNG feed:
-    - Starts `bid_scraper::bid_scraper_client::run_nng_subscriber_with_retries` with the configured `publisher_url`.
-    - On each `BlockBid` that represents a top bid (e.g., `publisher_type.publishes_only_top_bid()`), updates an internal map: `HashMap<(block, slot), (U256, Instant)>`.
-    - `latest_bid(block, slot) -> Option<U256>` returns current cached value.
-    - `subscribe_competition(block, slot, obs)` registers observers and emits updates when cache changes.
-
 - Edit: `crates/rbuilder/src/live_builder/config.rs`
-  - L1Config (existing field): `scraped_bids_publisher_url: Option<String>` is already present.
-  - Optional (future): `scraped_bids_cache_ttl_secs: Option<u64> = Some(32)` (only if you plan to add cleanup loop later).
-  - During builder creation (same place that constructs sink and WalletBalanceWatcher), instantiate `ScrapedNngBidValueSource` if `scraped_bids_publisher_url` is set and pass it to downstream components that need `Arc<dyn CompetitionBidProvider>` (e.g., SERVO startup). Reuse the existing timeouts in this module (e.g., `BID_SOURCE_TIMEOUT_SECS`, `BID_SOURCE_WAIT_TIME_SECS`).
+  - L1Config field `scraped_bids_publisher_url: Option<String>` is already present.
+  - Ensure we spawn the NNG subscriber when configured:
+    - Construct `ScrapedBids2BlockBidWithStatsObs::new(bidding_service.clone())` and pass it to `run_nng_subscriber_with_retries` with timeouts (`BID_SOURCE_TIMEOUT_SECS`, `BID_SOURCE_WAIT_TIME_SECS`).
+  - No additional provider objects or traits are needed.
 
 - No change required in bid-scraper; Ultrasound publishers already exist:
   - `crates/bid-scraper/src/ultrasound_ws_publisher.rs`
@@ -160,14 +154,20 @@ scraped_bids_publisher_url = "tcp://0.0.0.0:5555"
 ## Corner cases and mitigations
 
 - Competition-bid ingestion:
-  - Burst traffic may cause lock contention: consider `DashMap` or sharded maps if needed.
+  - Burst traffic may cause lock contention: if we later introduce in-process caches, consider `DashMap` or sharded maps.
   - Duplicate publishers/relays: filter by `publishes_only_top_bid()`; optionally add a config to accept duplicates.
   - Reconnect backoff: increase `retry_wait` exponentially on persistent failures.
 
 - SERVO decision flow:
-  - Stalled feeds: rely on per-slot cache + TTL; skip bids when no fresh data.
-  - Rapid bid raises: subscription path must update cache before returning to avoid stale reads.
+  - Stalled feeds: BiddingService should fall back to last-seen per-slot values or skip bids when no fresh data.
+  - Rapid bid raises: ensure the sink paths update internal state before evaluating bids to avoid stale reads.
   - Alloy version drift: pin alloy minor version; update profit tests on upgrade.
+
+## Validation plan
+
+- Unit: verify ScrapedBids2BlockBidWithStatsObs forwards BlockBid to a test implementation of `BlockBidWithStatsObs`.
+- Integration (optional, CI-light): run bid-scraper locally with Ultrasound publishers and rbuilder pointing `scraped_bids_publisher_url` to the same NNG endpoint; assert that bidding service logs receive competition updates.
+- Non-goals: re-introducing any `BidValueObs`/`CompetitionBidProvider` interfaces.
 
 ## Acceptance criteria
 

@@ -52,3 +52,54 @@ impl ScrapedBidsObs for ScrapedBids2BlockBidWithStatsObs {
         self.obs.update_new_bid(BlockBidWithStats::new(bid));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, BlockHash, U256};
+    use bid_scraper::types::PublisherType;
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    struct TestSink {
+        pub seen: Mutex<Vec<BlockBidWithStats>>,
+    }
+    impl BlockBidWithStatsObs for TestSink {
+        fn update_new_bid(&self, bid_with_stats: BlockBidWithStats) {
+            self.seen.lock().unwrap().push(bid_with_stats);
+        }
+    }
+
+    #[test]
+    fn forwards_block_bid_to_sink() {
+        let sink = Arc::new(TestSink { seen: Mutex::new(Vec::new()) });
+        let obs = ScrapedBids2BlockBidWithStatsObs::new(sink.clone());
+
+        let bid = BlockBid {
+            seen_time: 0.0,
+            publisher_name: "ultrasound-eu".to_string(),
+            publisher_type: PublisherType::UltrasoundWs,
+            relay_time: Some(0.0),
+            relay_name: "ultrasound-eu".to_string(),
+            block_hash: BlockHash::ZERO,
+            parent_hash: BlockHash::ZERO,
+            value: U256::from(12345u64),
+            slot_number: 123,
+            block_number: 456,
+            builder_pubkey: None,
+            extra_data: None,
+            fee_recipient: None,
+            proposer_fee_recipient: None,
+            gas_used: None,
+            optimistic_submission: None,
+        };
+
+        obs.update_new_bid(bid);
+
+        let got = sink.seen.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].bid.slot_number, 123);
+        assert_eq!(got[0].bid.block_number, 456);
+        assert_eq!(got[0].bid.value, U256::from(12345u64));
+    }
+}
