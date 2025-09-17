@@ -90,6 +90,29 @@ impl ScrapedNngBidValueSource {
 
         Self { cache, strong_subs, weak_subs, _task }
     }
+
+    #[cfg(test)]
+    fn test_insert(&self, block: u64, slot: u64, val: U256) {
+        self.cache.write().insert((block, slot), (val, Instant::now()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn latest_bid_returns_inserted_value() {
+        let cancel = CancellationToken::new();
+        let src = ScrapedNngBidValueSource::new(
+            "tcp://127.0.0.1:0".to_string(),
+            cancel,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        src.test_insert(100, 2000, U256::from(1234u64));
+        assert_eq!(src.latest_bid(100, 2000), Some(U256::from(1234u64)));
+    }
 }
 
 impl CompetitionBidProvider for ScrapedNngBidValueSource {
