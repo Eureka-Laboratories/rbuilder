@@ -175,19 +175,13 @@ where
 
         let (header_sender, header_receiver) = mpsc::channel(CLEAN_TASKS_CHANNEL_SIZE);
 
-        // plugins: initialize registry and emit lifecycle start
-        let mut plugin_registry = PluginRegistry::new();
+        let plugin_registry = PluginRegistry::new();
         for hook in plugin_registry.lifecycle_hooks() {
             hook.on_builder_started();
         }
 
-        // Register Eureka-provided RPC hooks (TOBA) into the registry
-        eureka::toba::register_toba_hook(&mut plugin_registry);
-
         let orderpool_subscriber = {
-            // plugins: let plugins extend the extra RPC router before server boot
-            let mut extra_rpc = self.extra_rpc;
-            // plugin RPC hooks are now always available via start_orderpool_jobs
+            let extra_rpc = self.extra_rpc;
 
             let (handle, sub) = start_orderpool_jobs(
                 self.order_input_config,

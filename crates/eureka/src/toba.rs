@@ -1,10 +1,8 @@
-use std::sync::Arc;
-
 use alloy_primitives::Bytes;
 use eyre::Result;
 use jsonrpsee::{types::ErrorObject, RpcModule};
 use rbuilder::live_builder::order_input::ReplaceableOrderPoolCommand;
-use rbuilder::plugin::{Named, PluginRegistry, RpcDeps, RpcHook};
+use rbuilder::plugin::{Named, RpcDeps, RpcHook};
 use rbuilder::primitives::{
     serialize::{RawTx, TxEncoding},
     MempoolTx, Order,
@@ -59,8 +57,4 @@ impl RpcHook for TobaRpc {
         })?;
         Ok(())
     }
-}
-
-pub fn register_toba_hook(reg: &mut PluginRegistry) {
-    reg.register_rpc_hook(Arc::new(TobaRpc));
 }

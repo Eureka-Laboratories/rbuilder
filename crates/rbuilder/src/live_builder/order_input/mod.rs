@@ -108,8 +108,6 @@ pub struct OrderInputConfig {
     pub input_channel_buffer_size: usize,
     /// See [OrderPool::time_to_keep_mempool_txs]
     time_to_keep_mempool_txs: Duration,
-    /// Enable TOBA RPC endpoint (eth_sendRawTransactionToba)
-    pub enable_toba_rpc: bool,
 }
 pub const DEFAULT_SERVE_MAX_CONNECTIONS: u32 = 4096;
 pub const DEFAULT_RESULTS_CHANNEL_TIMEOUT: Duration = Duration::from_millis(50);
@@ -126,7 +124,6 @@ impl OrderInputConfig {
         results_channel_timeout: Duration,
         input_channel_buffer_size: usize,
         time_to_keep_mempool_txs: Duration,
-        enable_toba_rpc: bool,
     ) -> Self {
         Self {
             ignore_cancellable_orders,
@@ -138,7 +135,6 @@ impl OrderInputConfig {
             results_channel_timeout,
             input_channel_buffer_size,
             time_to_keep_mempool_txs,
-            enable_toba_rpc,
         }
     }
 
@@ -162,7 +158,6 @@ impl OrderInputConfig {
             results_channel_timeout: Duration::from_millis(50),
             input_channel_buffer_size: 10_000,
             time_to_keep_mempool_txs: Duration::from_secs(config.time_to_keep_mempool_txs_secs),
-            enable_toba_rpc: config.enable_toba_rpc,
         })
     }
 
@@ -246,7 +241,6 @@ where
         order_sender.clone(),
         extra_rpc,
         global_cancel.clone(),
-        #[cfg(feature = "plugins")]
         rpc_hooks,
     )
     .await?;

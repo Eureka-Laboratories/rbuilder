@@ -2,6 +2,81 @@ use crate::primitives::{ProfitInfo, SimValue, SimulatedOrder};
 use alloy_primitives::U256;
 use std::{cmp::Ordering, sync::Arc};
 
+/// A priority wrapper that biases TOBA orders (submitted via eth_sendRawTransactionToba)
+/// ahead of non-TOBA orders. Within each group, ordering follows the
+/// wrapped priority type `P`.
+#[derive(Debug, Clone)]
+pub struct TobaAwareOrderPriority<P>
+where
+    P: OrderPriority,
+{
+    order: Arc<SimulatedOrder>,
+    underlying: P,
+}
+
+impl<P> TobaAwareOrderPriority<P>
+where
+    P: OrderPriority,
+{
+    pub fn new_with_order(order: Arc<SimulatedOrder>) -> Self {
+        Self {
+            underlying: P::new(order.clone()),
+            order,
+        }
+    }
+}
+
+impl<P> OrderPriority for TobaAwareOrderPriority<P>
+where
+    P: OrderPriority,
+{
+    fn new(order: Arc<SimulatedOrder>) -> Self {
+        Self::new_with_order(order)
+    }
+
+    fn simulation_too_low(original_sim_value: &SimValue, new_sim_value: &SimValue) -> bool {
+        P::simulation_too_low(original_sim_value, new_sim_value)
+    }
+}
+
+impl<P> PartialEq for TobaAwareOrderPriority<P>
+where
+    P: OrderPriority,
+{
+    fn eq(&self, other: &Self) -> bool {
+        let self_is_toba = self.order.order.is_toba();
+        let other_is_toba = other.order.order.is_toba();
+        self_is_toba == other_is_toba && self.underlying == other.underlying
+    }
+}
+impl<P> Eq for TobaAwareOrderPriority<P> where P: OrderPriority {}
+
+impl<P> PartialOrd for TobaAwareOrderPriority<P>
+where
+    P: OrderPriority,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<P> Ord for TobaAwareOrderPriority<P>
+where
+    P: OrderPriority,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        let self_is_toba = self.order.order.is_toba();
+        let other_is_toba = other.order.order.is_toba();
+        if self_is_toba && !other_is_toba {
+            Ordering::Greater
+        } else if !self_is_toba && other_is_toba {
+            Ordering::Less
+        } else {
+            self.underlying.cmp(&other.underlying)
+        }
+    }
+}
+
 /// Trait to specify how we prioritize orders (eg: which we try first when are building blocks)
 pub trait OrderPriority: Ord + Clone + std::fmt::Debug + Send + Sync {
     fn new(order: Arc<SimulatedOrder>) -> Self;

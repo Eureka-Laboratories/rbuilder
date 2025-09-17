@@ -45,7 +45,6 @@ use uuid::Uuid;
 pub struct Metadata {
     pub received_at_timestamp: time::OffsetDateTime,
     pub refund_identity: Option<Address>,
-    /// True when the tx was submitted via TOBA (eth_sendRawTransactionToba)
     pub is_toba: bool,
 }
 

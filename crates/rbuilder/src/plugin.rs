@@ -36,6 +36,7 @@ pub trait LifecycleHook: Named + Send + Sync {
 }
 
 /// Optional RPC extension hook. Implementations can extend the JSON-RPC module.
+#[derive(Clone)]
 pub struct RpcDeps {
     pub results:
         tokio::sync::mpsc::Sender<crate::live_builder::order_input::ReplaceableOrderPoolCommand>,
@@ -49,7 +50,6 @@ pub trait RpcHook: Named + Send + Sync {
 
 /// Simple, typed plugin registry.
 /// Stores typed collections without any type erasure/downcasting.
-#[derive(Default, Debug)]
 pub struct PluginRegistry {
     order_input_hooks: Vec<Arc<dyn OrderInputHook>>, // plugins registry
     bid_feed_hooks: Vec<Arc<dyn BidFeedHook>>,       // plugins registry
@@ -59,7 +59,12 @@ pub struct PluginRegistry {
 
 impl PluginRegistry {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            order_input_hooks: Vec::new(),
+            bid_feed_hooks: Vec::new(),
+            lifecycle_hooks: Vec::new(),
+            rpc_hooks: Vec::new(),
+        }
     }
 
     pub fn register_order_input_hook(&mut self, hook: Arc<dyn OrderInputHook>) {

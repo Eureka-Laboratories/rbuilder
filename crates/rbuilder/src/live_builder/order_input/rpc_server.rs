@@ -69,7 +69,7 @@ pub async fn start_server_accepting_bundles(
     results: mpsc::Sender<ReplaceableOrderPoolCommand>,
     extra_rpc: RpcModule<()>,
     global_cancel: CancellationToken,
-    rpc_hooks: Vec<std::sync::Arc<dyn crate::plugin::RpcHook>>,
+    rpc_hooks: Vec<Arc<dyn crate::plugin::RpcHook>>,
 ) -> eyre::Result<JoinHandle<()>> {
     let addr = SocketAddr::V4(SocketAddrV4::new(config.server_ip, config.server_port));
     let timeout = config.results_channel_timeout;

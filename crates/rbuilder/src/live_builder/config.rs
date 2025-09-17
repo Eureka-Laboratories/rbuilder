@@ -756,19 +756,29 @@ where
 {
     match cfg.sorting {
         Sorting::MevGasPrice => Arc::new(OrderingBuildingAlgorithm::<
-            OrderMevGasPricePriority<ProfitInfoGetterType>,
+            crate::building::order_priority::TobaAwareOrderPriority<
+                OrderMevGasPricePriority<ProfitInfoGetterType>,
+            >,
         >::new(cfg, name)),
         Sorting::MaxProfit => Arc::new(OrderingBuildingAlgorithm::<
-            OrderMaxProfitPriority<ProfitInfoGetterType>,
+            crate::building::order_priority::TobaAwareOrderPriority<
+                OrderMaxProfitPriority<ProfitInfoGetterType>,
+            >,
         >::new(cfg, name)),
         Sorting::TypeMaxProfit => Arc::new(OrderingBuildingAlgorithm::<
-            OrderTypePriority<ProfitInfoGetterType>,
+            crate::building::order_priority::TobaAwareOrderPriority<
+                OrderTypePriority<ProfitInfoGetterType>,
+            >,
         >::new(cfg, name)),
         Sorting::LengthThreeMaxProfit => Arc::new(OrderingBuildingAlgorithm::<
-            OrderLengthThreeMaxProfitPriority<ProfitInfoGetterType>,
+            crate::building::order_priority::TobaAwareOrderPriority<
+                OrderLengthThreeMaxProfitPriority<ProfitInfoGetterType>,
+            >,
         >::new(cfg, name)),
         Sorting::LengthThreeMevGasPrice => Arc::new(OrderingBuildingAlgorithm::<
-            OrderLengthThreeMevGasPricePriority<ProfitInfoGetterType>,
+            crate::building::order_priority::TobaAwareOrderPriority<
+                OrderLengthThreeMevGasPricePriority<ProfitInfoGetterType>,
+            >,
         >::new(cfg, name)),
     }
 }

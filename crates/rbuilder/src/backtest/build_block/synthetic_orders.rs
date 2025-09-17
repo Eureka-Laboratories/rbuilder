@@ -96,6 +96,7 @@ impl<ConfigType: LiveBuilderConfig> SyntheticOrdersSource<ConfigType> {
                 metadata: Metadata {
                     received_at_timestamp: time::OffsetDateTime::from_unix_timestamp(0).unwrap(),
                     refund_identity: None,
+                    is_toba: false,
                 },
                 dropping_tx_hashes: Default::default(),
                 refund: None,
