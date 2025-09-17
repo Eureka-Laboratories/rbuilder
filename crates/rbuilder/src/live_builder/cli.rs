@@ -113,7 +113,10 @@ where
         }
     };
 
-    let config: ConfigType = load_config_toml_and_env(cli.config)?;
+    let config_path = cli.config.clone();
+    let config: ConfigType = load_config_toml_and_env(&config_path)?;
+    // Initialize plugin config from the main TOML if a [servo] section is present
+    crate::plugins::config::init_plugins_from_main_toml(&config_path);
     config.base_config().setup_tracing_subscriber()?;
 
     let ready_to_build = Arc::new(AtomicBool::new(false));

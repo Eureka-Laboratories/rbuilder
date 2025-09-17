@@ -57,9 +57,9 @@ impl ScrapedBidsObs for ScrapedBids2BlockBidWithStatsObs {
 mod tests {
     use super::*;
     use alloy_primitives::{BlockHash, U256};
+    use bid_scraper::bid_scraper_client::run_nng_subscriber_with_retries;
     use bid_scraper::types::PublisherType;
     use std::sync::Mutex;
-    use bid_scraper::bid_scraper_client::run_nng_subscriber_with_retries;
 
     #[derive(Debug)]
     struct TestSink {
@@ -73,7 +73,9 @@ mod tests {
 
     #[test]
     fn forwards_block_bid_to_sink() {
-        let sink = Arc::new(TestSink { seen: Mutex::new(Vec::new()) });
+        let sink = Arc::new(TestSink {
+            seen: Mutex::new(Vec::new()),
+        });
         let obs = ScrapedBids2BlockBidWithStatsObs::new(sink.clone());
 
         let bid = BlockBid {
@@ -107,7 +109,7 @@ mod tests {
     // Feature-gated NNG integration test. Requires `--features nng-integration-test`.
     #[tokio::test]
     async fn nng_end_to_end_forwards_bid() {
-        use runng::{factory::latest::ProtocolFactory, Listen, protocol::Pub0, SendSocket};
+        use runng::{factory::latest::ProtocolFactory, protocol::Pub0, Listen, SendSocket};
         use tokio_util::sync::CancellationToken;
 
         // Unique inproc endpoint for isolation
@@ -119,7 +121,9 @@ mod tests {
         pub_sock.listen(&endpoint).expect("pub listen");
 
         // Prepare sink and spawn subscriber
-        let sink = Arc::new(TestSink { seen: Mutex::new(Vec::new()) });
+        let sink = Arc::new(TestSink {
+            seen: Mutex::new(Vec::new()),
+        });
         let obs = Arc::new(ScrapedBids2BlockBidWithStatsObs::new(sink.clone()));
         let cancel = CancellationToken::new();
         let subscriber = tokio::spawn(async move {

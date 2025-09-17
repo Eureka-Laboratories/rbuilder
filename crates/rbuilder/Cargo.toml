@@ -125,6 +125,7 @@ tonic = "0.13"
 prost = "0.13"
 prost-types = "0.13"
 runng = { version = "^0.3" }
+tokio-websockets = { version = "0.7", features = ["client", "ring", "getrandom"] }
 
 # IPC state provider deps
 reipc = { git = "https://github.com/nethermindeth/reipc.git", rev = "3837f3539201f948dd1c2c96a85a60d589feb4c6" }

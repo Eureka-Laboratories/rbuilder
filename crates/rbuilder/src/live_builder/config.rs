@@ -432,21 +432,41 @@ impl LiveBuilderConfig for Config {
         );
         // Create the bidding service factory
         let bidding_service_factory = |landed_blocks: &[LandedBlockInfo]| {
-            // Clone the data you need for the async block
             let landed_blocks = landed_blocks.to_vec();
-            // Return a pinned boxed future
             Box::pin(async move {
-                let subsidy = subsidy
-                    .as_ref()
-                    .map(|s| parse_ether(s))
-                    .unwrap_or(Ok(U256::ZERO))?;
-                let bidding_service: Arc<dyn BiddingService> =
-                    Arc::new(TrueBlockValueBiddingService::new(
-                        &landed_blocks,
-                        slot_delta_to_start_bidding_ms,
-                        subsidy,
-                    ));
-                Ok(bidding_service)
+                let use_servo = std::env::var("SERVO_ENABLED")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                if use_servo {
+                    let subsidy = subsidy
+                        .as_ref()
+                        .map(|s| parse_ether(s))
+                        .unwrap_or(Ok(U256::ZERO))?;
+                    let tbv: Arc<dyn BiddingService> = Arc::new(
+                        TrueBlockValueBiddingService::new(
+                            &landed_blocks,
+                            slot_delta_to_start_bidding_ms,
+                            subsidy,
+                        ),
+                    );
+                    let servo: Arc<dyn BiddingService> = Arc::new(
+                        crate::eureka::servo::bidder::ServoBiddingService::new(&landed_blocks),
+                    );
+                    let mux = crate::eureka::servo::multiplex_bidding_service::MultiplexBiddingService::new(tbv, servo);
+                    Ok::<Arc<dyn BiddingService>, eyre::Report>(Arc::new(mux))
+                } else {
+                    let subsidy = subsidy
+                        .as_ref()
+                        .map(|s| parse_ether(s))
+                        .unwrap_or(Ok(U256::ZERO))?;
+                    let bidding_service: Arc<dyn BiddingService> =
+                        Arc::new(TrueBlockValueBiddingService::new(
+                            &landed_blocks,
+                            slot_delta_to_start_bidding_ms,
+                            subsidy,
+                        ));
+                    Ok(bidding_service)
+                }
             })
                 as Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn BiddingService>>> + Send>>
         };
@@ -1002,15 +1022,15 @@ where
     let bidding_service = bidding_service_factory(&wallet_history).await?;
     let bidding_service_win_control = bidding_service.win_control();
 
-    if let Some(scraped_bids_publisher_url) = l1_config.scraped_bids_publisher_url.clone() {
-        // Create a ScrapedBids2BlockBidWithStatsObs that will forward bids from run_nng_subscriber_with_retries to the bidding service.
+    // NNG endpoint comes from core L1Config only
+    if let Some(endpoint) = l1_config.scraped_bids_publisher_url.clone() {
         let bidding_service_bids_obs = Arc::new(ScrapedBids2BlockBidWithStatsObs::new(
             bidding_service.clone(),
         ));
         tokio::spawn(run_nng_subscriber_with_retries(
             bidding_service_bids_obs,
             cancellation_token.clone(),
-            scraped_bids_publisher_url,
+            endpoint,
             Duration::from_secs(BID_SOURCE_TIMEOUT_SECS),
             Duration::from_secs(BID_SOURCE_WAIT_TIME_SECS),
         ));

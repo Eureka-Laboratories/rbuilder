@@ -1,0 +1,46 @@
+root_hash_use_sparse_trie = true
+root_hash_compare_sparse_trie = false
+log_json = true
+log_level = "info,rbuilder=debug"
+chain = "mainnet"
+reth_datadir = "/data"
+cl_node_url = ["http://127.0.0.1:5052"]
+jsonrpc_server_port = 8645
+jsonrpc_server_ip = "0.0.0.0"
+el_node_ipc_path = "/data/reth.ipc"
+# NNG competition feed endpoint (preferred when set)
+# scraped_bids_publisher_url = "tcp://0.0.0.0:5555"
+
+enabled_relays = []
+live_builders = ["mp-ordering"]
+extra_data = "Eureka (eurekabuilder.xyz)"
+ws_toba_port = 3030
+coinbase_secret_key = "env:COINBASE_SECRET_KEY"
+relay_secret_key = "env:RELAY_SECRET_KEY"
+ignore_cancellable_orders = false
+coinbase_address = "0xFB74767C1ce1aadA0a0E114441173b57f8C1571b"
+
+# random address
+loan_router_addresses = ["0xd122fcA8E283E7a4311C222D023Da8Df4EA1C0F9"]
+
+#telemetry config
+full_telemetry_server_port = 6070
+full_telemetry_server_ip = "0.0.0.0"
+
+# optimistic builder config
+optimistic_enabled = true
+optimistic_relay_secret_key = "env:RELAY_SECRET_KEY"
+optimistic_max_bid_value_eth = "1"
+
+[[builders]]
+name = "mp-ordering"
+algo = "ordering-builder"
+discard_txs = true
+sorting = "max-profit"
+failed_order_retries = 1
+drop_failed_orders = true
+
+[[relays]]
+name = "test"
+url = "http://localhost:5555"
+mode = "full"

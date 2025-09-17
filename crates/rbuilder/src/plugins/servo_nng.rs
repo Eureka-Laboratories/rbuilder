@@ -8,13 +8,17 @@ pub struct ServoNngBidFeedPlugin {
 
 impl ServoNngBidFeedPlugin {
     pub fn from_env() -> Self {
-        let enabled = std::env::var("SERVO_PLUGIN_ENABLED").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+        let enabled = std::env::var("SERVO_PLUGIN_ENABLED")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         Self { enabled }
     }
 }
 
 impl Named for ServoNngBidFeedPlugin {
-    fn name(&self) -> &'static str { "servo-nng" }
+    fn name(&self) -> &'static str {
+        "servo-nng"
+    }
 }
 
 impl BidFeedHook for ServoNngBidFeedPlugin {

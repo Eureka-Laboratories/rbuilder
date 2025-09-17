@@ -99,4 +99,3 @@ impl Default for PluginRegistry {
         Self::new()
     }
 }
-

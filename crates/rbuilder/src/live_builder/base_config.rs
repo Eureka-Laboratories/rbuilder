@@ -726,7 +726,8 @@ mod test {
         // Setup and initialize a temp reth db (with static files)
         let tempdir = TempDir::with_prefix_in("rbuilder-", "/tmp").unwrap();
 
-        let data_dir = MaybePlatformPath::<DataDirPath>::from(tempdir.into_path());
+        let data_dir_path = tempdir.keep();
+        let data_dir = MaybePlatformPath::<DataDirPath>::from(data_dir_path);
         let data_dir = data_dir.unwrap_or_chain_default(Chain::mainnet(), DatadirArgs::default());
 
         let db = Arc::new(init_db(data_dir.data_dir(), Default::default()).unwrap());

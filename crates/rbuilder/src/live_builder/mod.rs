@@ -176,8 +176,15 @@ where
         let (header_sender, header_receiver) = mpsc::channel(CLEAN_TASKS_CHANNEL_SIZE);
 
         let mut plugin_registry = PluginRegistry::new();
-        // Register built-in SERVO plugin (NNG wiring handled in config.rs)
-        plugin_registry.register_bid_feed_hook(Arc::new(crate::plugins::servo_nng::ServoNngBidFeedPlugin::from_env()));
+        // Register built-in SERVO plugins
+        plugin_registry.register_bid_feed_hook(Arc::new(
+            crate::plugins::servo_nng::ServoNngBidFeedPlugin::from_env(),
+        ));
+        let servo_ws_plugin = Arc::new(
+            crate::plugins::servo_ws_fetcher::ServoWsFetcherPlugin::from_plugins_config(),
+        );
+        plugin_registry.register_order_input_hook(servo_ws_plugin.clone());
+        plugin_registry.register_rpc_hook(servo_ws_plugin.clone());
 
         for hook in plugin_registry.lifecycle_hooks() {
             hook.on_builder_started();

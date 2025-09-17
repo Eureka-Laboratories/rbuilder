@@ -12,3 +12,5 @@ pub mod utils;
 
 pub mod plugin;
 pub mod plugins;
+pub use plugins::config as plugins_config;
+pub mod eureka;

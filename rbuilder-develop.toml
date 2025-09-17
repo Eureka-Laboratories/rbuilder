@@ -1,0 +1,92 @@
+root_hash_use_sparse_trie = true
+root_hash_compare_sparse_trie = false
+log_json = true
+log_level = "info,eureka=debug,servo=debug,rbuilder::live_builder::block_output::bid_value_source=debug"
+# log_level = "info,rbuilder=debug,debug_borrow=trace,rbuilder::live_builder::block_output::relay_submit=trace"
+chain = "mainnet"
+reth_datadir = "/data"
+cl_node_url = ["http://127.0.0.1:5052"]
+jsonrpc_server_port = 8645
+jsonrpc_server_ip = "0.0.0.0"
+el_node_ipc_path = "/data/reth.ipc"
+# NNG competition feed endpoint (preferred when set)
+# scraped_bids_publisher_url = "tcp://0.0.0.0:5555"
+
+enabled_relays = [
+    "flashbots",
+    "ultrasound-eu",
+    "titan",
+    "bloxroute_max_profit",
+    "bloxroute_regulated",
+    "agnostic",
+    "aestus",
+]
+live_builders = ["mp-ordering"]
+extra_data = "Eureka (eurekabuilder.xyz)"
+ws_toba_port = 3030
+coinbase_secret_key = "env:COINBASE_SECRET_KEY"
+relay_secret_key = "env:RELAY_SECRET_KEY"
+ignore_cancellable_orders = false
+simulation_use_random_coinbase = false
+
+# block subsidy disabled in develop
+# subsidy = "0.0021447"
+
+loan_signer_secret_key = "env:LOAN_SIGNER_SECRET_KEY"
+loan_router_addresses = ["0xd122fcA8E283E7a4311C222D023Da8Df4EA1C0F9"]
+coinbase_address = "0xFB74767C1ce1aadA0a0E114441173b57f8C1571b"
+
+#telemetry config
+full_telemetry_server_port = 6069
+full_telemetry_server_ip = "0.0.0.0"
+redacted_telemetry_server_ip = "0.0.0.0"
+redacted_telemetry_server_port = 6070
+
+# optimistic builder config
+optimistic_enabled = false
+
+[[builders]]
+name = "mp-ordering"
+algo = "ordering-builder"
+discard_txs = true
+sorting = "max-profit"
+failed_order_retries = 1
+drop_failed_orders = true
+
+[[relays]]
+name = "titan"
+url = "https://0x8c4ed5e24fe5c6ae21018437bde147693f68cda427cd1122cf20819c30eda7ed74f72dece09bb313f2a1855595ab677d@global.titanrelay.xyz"
+mode = "full"
+
+[[relays]]
+name = "bloxroute_max_profit"
+url = "https://0x8b5d2e73e2a3a55c6c87b8b6eb92e0149a125c852751db1422fa951e42a09b82c142c3ea98d0d9930b056a3bc9896b8f@bloxroute.max-profit.blxrbdn.com"
+mode = "full"
+authorization_header = "env:BLOXROUTE_AUTHORIZATION_HEADER"
+
+[[relays]]
+name = "bloxroute_regulated"
+url = "https://0xb0b07cd0abef743db4260b0ed50619cf6ad4d82064cb4fbec9d3ec530f7c5e6793d9f286c4e082c0244ffb9f2658fe88@bloxroute.regulated.blxrbdn.com"
+mode = "full"
+authorization_header = "env:BLOXROUTE_AUTHORIZATION_HEADER"
+
+[[relays]]
+name = "aestus"
+url = "https://0xa15b52576bcbf1072f4a011c0f99f9fb6c66f3e1ff321f11f461d15e31b1cb359caa092c71bbded0bae5b5ea401aab7e@aestus.live"
+mode = "full"
+
+# SERVO configuration (parsed by plugin at runtime)
+[servo]
+enabled = true
+ws_url = "wss://relay.servo.auction/ws"
+http_url = "https://auctioneer.servo.auction/api/v1/"
+el_rpc_url = "http://localhost:8545"
+bearer_token = "env:SERVO_BEARER_TOKEN"
+servo_secret_key = "env:SERVO_SECRET_KEY"
+max_reconnect_attempts = 5
+reconnect_delay_ms = 3000
+timeout_ms = 10000
+
+[bidding]
+max_bid_ratio_bp = 5000 # bid 50% of the total servo value
+max_servo_subsidy = "100000000000000" # 0.0001 ETH

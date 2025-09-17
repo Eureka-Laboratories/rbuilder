@@ -78,7 +78,8 @@ Every field has a default if omitted.
 |optimistic_max_bid_value_eth|string| Bids above this value will always be submitted in non-optimistic mode.|"0.0"|
 |cl_node_url|vec[env/stirng]| Array if urls to CL clients to get the new payload events|["http://127.0.0.1:3500"]
 |genesis_fork_version|optional string|Genesis fork version for the chain. If not provided it will be fetched from the beacon client.|None|
-|scraped_bids_publisher_url|optional string| If present, url to connect to the bid scraper service.|None|
+|scraped_bids_publisher_url|optional string| If present, url to connect to the bid scraper service (NNG competition feed).|None|
+
 ## Building algorithms
 rbuilder can multiple building algorithms and each algorithm can be instantiated multiple times with it's own set of parameters each time.
 Each instantiated algorithm starts with:
@@ -94,7 +95,7 @@ Each instantiated algorithm starts with:
 |sorting|mandatory string|Valid values:<br>-"mev-gas-price": Sorts the SimulatedOrders by its effective gas price. This not only includes the explicit gas price set in the tx but also the direct coinbase payments so we compute it as (coinbase balance delta after executing the order) / (gas used).<br>-"max-profit": Sorts the SimulatedOrders by its absolute profit which is computed as the coinbase balance delta after executing the order.<br>-"type-max-profit": (Experimental) Orders are ordered by their origin (bundle/sbundles then mempool) and then by their absolute profit.<br>-"length-three-max-profit":(Experimental) Orders are ordered by length 3 (orders length >= 3 first) and then by their absolute profit.<br>-"length-three-mev-gas-price":(Experimental) Orders are ordered by length 3 (orders length >= 3 first) and then by their mev gas price.||
 |failed_order_retries|mandatory int | Only when a tx fails because the profit was worst than expected: Number of time an order can fail during a single block building iteration.<br> When thi happens it gets reinserted in the PrioritizedOrderStore with the new simulated profit (the one that failed).||
 |drop_failed_orders|mandatory bool| if a tx fails in a block building iteration it's dropped so next iterations will not use it.||
-|coinbase_payment|optional bool | Start the first iteration of block building using direct pay to fee_recipient (validator)<br>This mode saves gas on the payout tx from builder to validator but disables mev-share and profit taking.|false|
+|coinbase_payment|optional bool | Start the first iteration of block building using direct pay to fee_recipient (validator)<brThis mode saves gas on the payout tx from builder to validator but disables mev-share and profit taking.|false|
 |build_duration_deadline_ms|optional int| Amount of time allocated for EVM execution while building block. If None it only stops when it tried all orders.| None|
 |pre_filtered_build_duration_deadline_ms|optional int| Amount of time allocated for EVM execution for the pre-filtered building step. If None it only stops when it tried all orders.<br>In this second building step the building algorithm will only try to include orders other algorithms landed in their last locks.|0|
 |ignore_mempool_profit_on_bundles|bool|When computing profit to prioritize orders on s/bundles any profit from a mempool tx will be ignored.|false|
@@ -114,4 +115,26 @@ Each instantiated algorithm starts with:
 |slot_delta_to_start_bidding_ms| optional int| When the sample bidder (see TrueBlockValueBiddingService) will start bidding relative to the slot start.<br>Usually a negative number.|None|
 |subsidy|optional string|Value added to the bids (see TrueBlockValueBiddingService).<br>The builder address must have enough balance for the subsidy.<br>Example:"1.23" for 1.23 ETH|None|
 
-    
+## SERVO plugin configuration
+
+Add a top-level [servo] section to your main config TOML (the file you pass via RBUILDER_CONFIG or `--config`). The plugin reads this section at startup; no separate plugin file is used.
+
+Example:
+
+```toml
+[servo]
+enabled = true
+ws_url = "wss://relay.servo.auction/ws"
+http_url = "https://auctioneer.servo.auction/api/v1/"   # optional
+el_rpc_url = "http://localhost:8545"                      # optional
+bearer_token = "env:SERVO_BEARER_TOKEN"
+servo_secret_key = "env:SERVO_SECRET_KEY"                # optional
+max_reconnect_attempts = 5                                # optional
+reconnect_delay_ms = 3000                                  # optional
+timeout_ms = 10000                                         # optional
+```
+
+Notes:
+- Competition feed (NNG) is configured in core via `scraped_bids_publisher_url`. The plugin does not set the NNG endpoint.
+- If `enabled=false` or `ws_url` is missing, the plugin does nothing.
+- All SERVO handling remains inside the plugin; this section only carries configuration.
