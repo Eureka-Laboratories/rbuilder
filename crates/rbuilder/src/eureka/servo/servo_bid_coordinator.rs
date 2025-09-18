@@ -1,4 +1,5 @@
 use alloy_primitives::U256;
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -50,6 +51,20 @@ impl ServoBidCoordinator {
     }
 }
 
+// Global coordinator accessor to share the same instance between NNG feed and HTTP bidder.
+lazy_static! {
+    static ref GLOBAL_COORDINATOR: RwLock<Option<Arc<ServoBidCoordinator>>> = RwLock::new(None);
+}
+
+pub fn set_global(coordinator: Arc<ServoBidCoordinator>) {
+    let mut guard = GLOBAL_COORDINATOR.write().unwrap();
+    *guard = Some(coordinator);
+}
+
+pub fn global() -> Option<Arc<ServoBidCoordinator>> {
+    GLOBAL_COORDINATOR.read().unwrap().clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,5 +89,13 @@ mod tests {
         assert!(coord.should_bid_against_competition(base, servo, Some(U256::from(99)))); // 99+10=109
         assert!(!coord.should_bid_against_competition(base, servo, Some(U256::from(101)))); // 101+10=111
         assert!(!coord.should_bid_against_competition(base, servo, None));
+    }
+
+    #[test]
+    fn global_set_and_get() {
+        let coord = Arc::new(ServoBidCoordinator::new(U256::from(1)));
+        super::set_global(coord.clone());
+        let got = super::global().unwrap();
+        assert!(Arc::ptr_eq(&coord, &got));
     }
 }

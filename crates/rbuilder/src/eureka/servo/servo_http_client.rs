@@ -60,8 +60,14 @@ pub struct BidResult {
 impl ServoHttpClient {
     pub fn new(bearer_token: String, base_url: Url, staker_address: Address) -> eyre::Result<Self> {
         let mut headers = header::HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, format!("Bearer {bearer_token}").parse()?);
-        headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/json"));
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {bearer_token}").parse()?,
+        );
+        headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/json"),
+        );
         Ok(Self {
             client: Client::builder().default_headers(headers).build()?,
             staker_address,
@@ -77,11 +83,15 @@ impl ServoHttpClient {
     pub async fn open_payment_channel(&self) -> eyre::Result<PaymentChannelState> {
         #[derive(Debug, Serialize, Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct PaymentChannelRequest { staker_address: Address }
+        struct PaymentChannelRequest {
+            staker_address: Address,
+        }
         let response = self
             .client
             .post(self.base_url.join("paymentChannels")?)
-            .json(&PaymentChannelRequest { staker_address: self.staker_address })
+            .json(&PaymentChannelRequest {
+                staker_address: self.staker_address,
+            })
             .send()
             .await?;
         Self::handle_response::<PaymentChannelState>(response).await

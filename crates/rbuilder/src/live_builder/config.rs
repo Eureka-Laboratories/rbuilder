@@ -434,21 +434,19 @@ impl LiveBuilderConfig for Config {
         let bidding_service_factory = |landed_blocks: &[LandedBlockInfo]| {
             let landed_blocks = landed_blocks.to_vec();
             Box::pin(async move {
-                let use_servo = std::env::var("SERVO_ENABLED")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
-                if use_servo {
+                let servo_present = crate::plugins::config::load_default_plugins_config()
+                    .and_then(|c| c.servo)
+                    .is_some();
+                if servo_present {
                     let subsidy = subsidy
                         .as_ref()
                         .map(|s| parse_ether(s))
                         .unwrap_or(Ok(U256::ZERO))?;
-                    let tbv: Arc<dyn BiddingService> = Arc::new(
-                        TrueBlockValueBiddingService::new(
-                            &landed_blocks,
-                            slot_delta_to_start_bidding_ms,
-                            subsidy,
-                        ),
-                    );
+                    let tbv: Arc<dyn BiddingService> = Arc::new(TrueBlockValueBiddingService::new(
+                        &landed_blocks,
+                        slot_delta_to_start_bidding_ms,
+                        subsidy,
+                    ));
                     let servo: Arc<dyn BiddingService> = Arc::new(
                         crate::eureka::servo::bidder::ServoBiddingService::new(&landed_blocks),
                     );

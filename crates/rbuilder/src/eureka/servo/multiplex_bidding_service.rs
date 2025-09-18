@@ -5,8 +5,7 @@ use tokio_util::sync::CancellationToken;
 use alloy_primitives::U256;
 
 use crate::building::builders::{
-    block_building_helper::BiddableUnfinishedBlock,
-    UnfinishedBlockBuildingSink,
+    block_building_helper::BiddableUnfinishedBlock, UnfinishedBlockBuildingSink,
 };
 use crate::live_builder::block_output::bidding::block_bid_with_stats::BlockBidWithStats;
 use crate::live_builder::block_output::bidding::interfaces::{
@@ -52,7 +51,9 @@ impl BiddingService for MultiplexBiddingService {
                 self.inner.lock().unwrap().send_bid(bid);
             }
         }
-        let outer = Arc::new(OuterMaker { inner: Mutex::new(bid_maker) });
+        let outer = Arc::new(OuterMaker {
+            inner: Mutex::new(bid_maker),
+        });
         #[derive(Debug)]
         struct Forward {
             best: Arc<Mutex<Option<U256>>>,
@@ -62,14 +63,17 @@ impl BiddingService for MultiplexBiddingService {
             fn send_bid(&self, bid: Bid) {
                 let value = bid.payout_tx_value().unwrap_or(U256::ZERO);
                 let mut guard = self.best.lock().unwrap();
-                let should_forward = guard.map_or(true, |best_v| value > best_v);
+                let should_forward = guard.is_none_or(|best_v| value > best_v);
                 if should_forward {
                     *guard = Some(value);
                     self.outer.send_bid(bid);
                 }
             }
         }
-        let forwarder_a = Forward { best: best.clone(), outer: outer.clone() };
+        let forwarder_a = Forward {
+            best: best.clone(),
+            outer: outer.clone(),
+        };
         let forwarder_b = Forward { best, outer };
         let sink_a = self.a.create_slot_bidder(
             slot_block_id.clone(),
@@ -77,13 +81,13 @@ impl BiddingService for MultiplexBiddingService {
             Box::new(forwarder_a),
             cancel.clone(),
         );
-        let sink_b = self.b.create_slot_bidder(
-            slot_block_id,
-            slot_timestamp,
-            Box::new(forwarder_b),
-            cancel,
-        );
-        Arc::new(CompositeSlotSink { a: sink_a, b: sink_b })
+        let sink_b =
+            self.b
+                .create_slot_bidder(slot_block_id, slot_timestamp, Box::new(forwarder_b), cancel);
+        Arc::new(CompositeSlotSink {
+            a: sink_a,
+            b: sink_b,
+        })
     }
 
     fn win_control(&self) -> Arc<dyn BiddingServiceWinControl> {

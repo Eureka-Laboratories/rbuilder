@@ -6,10 +6,12 @@ use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::live_builder::order_input::ReplaceableOrderPoolCommand;
-use crate::primitives::{Bundle, MempoolTx, Order, TransactionSignedEcRecoveredWithBlobs, LAST_BUNDLE_VERSION};
+use crate::primitives::{
+    Bundle, MempoolTx, Order, TransactionSignedEcRecoveredWithBlobs, LAST_BUNDLE_VERSION,
+};
 use crate::utils::Signer;
 use alloy_consensus::{TxEip1559, TxLegacy};
-use alloy_primitives::{Address, Bytes, B256, TxHash};
+use alloy_primitives::{Address, Bytes, TxHash, B256};
 use alloy_rlp::Decodable;
 use serde::Deserialize;
 use serde::Serialize;
@@ -19,70 +21,172 @@ use std::str::FromStr;
 /// txs/bundles/allocations as Orders into the order pool via ReplaceableOrderPoolCommand::Order.
 #[derive(Debug, Clone)]
 pub struct ServoWsFetcherPlugin {
-    enabled: bool,
-    ws_url: Option<String>,
-    bearer: Option<String>,
+    cfg: Option<crate::plugins::config::ServoPluginConfig>,
     sender: Arc<TokioMutex<Option<tokio::sync::mpsc::Sender<ReplaceableOrderPoolCommand>>>>,
 }
 
 impl ServoWsFetcherPlugin {
     pub fn from_plugins_config() -> Self {
-        let cfg = crate::plugins::config::load_default_plugins_config();
-        if let Some(cfg) = cfg {
-            if let Some(servo) = cfg.servo {
-                return Self {
-                    enabled: servo.enabled,
-                    ws_url: servo.ws_url,
-                    bearer: servo.bearer_token,
-                    sender: Arc::new(TokioMutex::new(None)),
-                };
-            }
+        let cfg = crate::plugins::config::load_default_plugins_config().and_then(|c| c.servo);
+        Self {
+            cfg,
+            sender: Arc::new(TokioMutex::new(None)),
         }
-        Self { enabled: false, ws_url: None, bearer: None, sender: Arc::new(TokioMutex::new(None)) }
     }
 }
 
 impl Named for ServoWsFetcherPlugin {
-    fn name(&self) -> &'static str { "servo-ws-fetcher" }
+    fn name(&self) -> &'static str {
+        "servo-ws-fetcher"
+    }
 }
 
 #[async_trait]
 impl OrderInputHook for ServoWsFetcherPlugin {
     async fn on_order_input_started(&self, cancel: CancellationToken) -> eyre::Result<()> {
-        if !self.enabled {
-            tracing::info!(target: "plugins", name = "servo-ws-fetcher", "disabled");
-            return Ok(());
-        }
-        let Some(url) = self.ws_url.clone() else {
-            tracing::warn!(target: "plugins", name = "servo-ws-fetcher", "no ws_url configured");
+        let Some(cfg) = self.cfg.clone() else {
+            tracing::info!(target: "plugins", name = "servo-ws-fetcher", "SERVO not configured ([servo] section missing), skipping");
             return Ok(());
         };
-        let bearer = self.bearer.clone();
+        let url = cfg.ws_url.clone();
+        let bearer = Some(cfg.bearer_token.clone());
         let sender = self.sender.clone();
         tracing::info!(target: "plugins", name = "servo-ws-fetcher", ?url, "starting WS client");
 
         // WS ingest task
+        let cancel_ws = cancel.clone();
+        let max_attempts = cfg.max_reconnect_attempts.unwrap_or(12) as i32;
+        let delay_ms = cfg.reconnect_delay_ms.unwrap_or(5_000);
+        let read_timeout = cfg.timeout_ms.unwrap_or(30_000);
         tokio::spawn(async move {
-            if let Err(err) = run_ws(url, bearer, sender, cancel.clone()).await {
+            if let Err(err) = run_ws(
+                url,
+                bearer,
+                sender,
+                cancel_ws.clone(),
+                max_attempts,
+                delay_ms,
+                read_timeout,
+            )
+            .await
+            {
                 tracing::error!(target: "plugins", name = "servo-ws-fetcher", error = ?err, "ws client terminated with error");
             }
         });
         // Minimal HTTP client probe (ensures client is migrated and usable)
-        if let Some(servo_cfg) = crate::plugins::config::load_default_plugins_config().and_then(|c| c.servo) {
-            if let (Some(http_url), Some(token)) = (servo_cfg.http_url, servo_cfg.bearer_token) {
-                tokio::spawn(async move {
-                    let base = http_url.parse().unwrap_or("http://localhost".parse().unwrap());
-                    let staker = alloy_primitives::Address::ZERO;
-                    match crate::eureka::servo::servo_http_client::ServoHttpClient::new(token, base, staker) {
-                        Ok(client) => {
-                            if let Ok(info) = client.get_info().await {
-                                tracing::info!(target:"plugins", name="servo-http", chain_id=info.chain_id, "SERVO HTTP reachable");
-                            }
+        {
+            let http_url = cfg.http_url.clone();
+            let token = cfg.bearer_token.clone();
+            tokio::spawn(async move {
+                let base = http_url
+                    .parse()
+                    .unwrap_or("http://localhost".parse().unwrap());
+                let staker = alloy_primitives::Address::ZERO;
+                match crate::eureka::servo::servo_http_client::ServoHttpClient::new(
+                    token, base, staker,
+                ) {
+                    Ok(client) => {
+                        if let Ok(info) = client.get_info().await {
+                            tracing::info!(target:"plugins", name="servo-http", chain_id=info.chain_id, "SERVO HTTP reachable");
                         }
-                        Err(e) => tracing::warn!(target:"plugins", name="servo-http", error=?e, "Failed to init SERVO HTTP client"),
                     }
+                    Err(e) => {
+                        tracing::warn!(target:"plugins", name="servo-http", error=?e, "Failed to init SERVO HTTP client")
+                    }
+                }
+            });
+        }
+        // Start HTTP bidder
+        {
+            let http_url = cfg.http_url.clone();
+            let token = cfg.bearer_token.clone();
+            let el_rpc_url = cfg.el_rpc_url.clone();
+            let secret = cfg.servo_secret_key.clone();
+            let cancel_bidder = cancel.clone();
+            tokio::spawn(async move {
+                // Subscribe to live_builder slot/block context events
+                let rx = crate::live_builder::subscribe_slot_context();
+                // Build SERVO HTTP client and contracts
+                let base: url::Url = match http_url.parse() {
+                    Ok(u) => u,
+                    Err(_) => return,
+                };
+                // Derive staker wallet from secret
+                let sk_bytes = match alloy_primitives::hex::decode(secret.trim_start_matches("0x"))
+                {
+                    Ok(b) => b,
+                    Err(_) => return,
+                };
+                let staking_secret = match secp256k1::SecretKey::from_slice(&sk_bytes) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let staker_address = match crate::utils::Signer::try_from_secret(
+                    alloy_primitives::B256::from_slice(&sk_bytes),
+                ) {
+                    Ok(s) => s.address,
+                    Err(_) => return,
+                };
+                let client = match crate::eureka::servo::servo_http_client::ServoHttpClient::new(
+                    token,
+                    base,
+                    staker_address,
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(target:"plugins", name = "servo-http-bidder", error=?e, "Failed to init SERVO HTTP client");
+                        return;
+                    }
+                };
+                let info = match client.get_info().await {
+                    Ok(i) => i,
+                    Err(e) => {
+                        tracing::warn!(target:"plugins", name = "servo-http-bidder", error=?e, "Failed to fetch SERVO info");
+                        return;
+                    }
+                };
+                let provider = crate::utils::http_provider(match el_rpc_url.parse() {
+                    Ok(u) => u,
+                    Err(_) => return,
                 });
-            }
+                let stake = crate::eureka::servo::servo_stake_contract::ServoStakeContract::new(
+                    info.stake_contract,
+                    provider.clone(),
+                );
+                let token_addr = match stake.validate_deployment().await {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::warn!(target:"plugins", name = "servo-http-bidder", error=?e, "Stake validation failed");
+                        return;
+                    }
+                };
+                let token = crate::eureka::servo::erc20_contract::Erc20Contract::new(
+                    token_addr,
+                    provider.clone(),
+                );
+                // Coordinator handle
+                let coordinator = crate::eureka::servo::servo_bid_coordinator::global()
+                    .unwrap_or_else(|| {
+                        std::sync::Arc::new(
+                            crate::eureka::servo::servo_bid_coordinator::ServoBidCoordinator::new(
+                                alloy_primitives::U256::ZERO,
+                            ),
+                        )
+                    });
+                // Start bidder
+                let bidder = crate::eureka::servo::servo_bidder::ServoBidder::new(
+                    client,
+                    stake,
+                    token,
+                    staking_secret,
+                    staker_address,
+                    coordinator,
+                    rx,
+                    None,
+                );
+                bidder.start(cancel_bidder.clone());
+                tracing::info!(target:"plugins", name = "servo-http-bidder", "SERVO HTTP bidder started");
+            });
         }
         Ok(())
     }
@@ -117,7 +221,11 @@ enum ServoWsMessage {
     IncomingTx(ServoTx),
     IncomingBundle(Vec<ServoTx>),
     #[serde(rename_all = "camelCase")]
-    Allocation { staker_address: Address, bid_id: String, raw_signed_txs: Vec<Bytes> },
+    Allocation {
+        staker_address: Address,
+        bid_id: String,
+        raw_signed_txs: Vec<Bytes>,
+    },
 }
 
 async fn run_ws(
@@ -125,39 +233,28 @@ async fn run_ws(
     bearer: Option<String>,
     sender: Arc<TokioMutex<Option<tokio::sync::mpsc::Sender<ReplaceableOrderPoolCommand>>>>,
     cancel: CancellationToken,
+    max_attempts: i32,
+    delay_ms: u64,
+    read_timeout: u64,
 ) -> eyre::Result<()> {
     use futures::{SinkExt, StreamExt};
-    use tokio_websockets::{ClientBuilder, Message};
     use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
+    use tokio_websockets::{ClientBuilder, Message};
     use tonic::transport::Uri;
-
-    // Backoff / timeouts from config if present
-    let cfg = crate::plugins::config::load_default_plugins_config().unwrap_or_default();
-    let servo_cfg = cfg.servo.unwrap_or(crate::plugins::config::ServoPluginConfig {
-        enabled: true,
-        ws_url: None,
-        http_url: None,
-        el_rpc_url: None,
-        bearer_token: None,
-        servo_secret_key: None,
-        max_reconnect_attempts: Some(12),
-        reconnect_delay_ms: Some(5_000),
-        timeout_ms: Some(30_000),
-    });
-    let max_attempts = servo_cfg.max_reconnect_attempts.unwrap_or(12) as i32;
-    let delay_ms = servo_cfg.reconnect_delay_ms.unwrap_or(5_000);
-    let read_timeout = servo_cfg.timeout_ms.unwrap_or(30_000);
 
     let mut attempts = 0;
     'outer: loop {
-        if cancel.is_cancelled() { break; }
+        if cancel.is_cancelled() {
+            break;
+        }
         attempts += 1;
         // Build client with optional Authorization header
         let uri: Uri = url.parse().expect("invalid ws url");
         let mut builder = ClientBuilder::from_uri(uri);
         if let Some(token) = bearer.clone() {
             let name: HeaderName = AUTHORIZATION;
-            let value = HeaderValue::from_str(&format!("Bearer {token}")).unwrap_or_else(|_| HeaderValue::from_static(""));
+            let value = HeaderValue::from_str(&format!("Bearer {token}"))
+                .unwrap_or_else(|_| HeaderValue::from_static(""));
             builder = builder.add_header(name, value);
         }
         match builder.connect().await {
@@ -169,7 +266,12 @@ async fn run_ws(
                         let _ = ws.send(Message::close(None, "")).await;
                         break 'outer;
                     }
-                    match tokio::time::timeout(std::time::Duration::from_millis(read_timeout as u64), ws.next()).await {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(read_timeout),
+                        ws.next(),
+                    )
+                    .await
+                    {
                         Ok(Some(Ok(msg))) => {
                             if let Some(text) = msg.as_text() {
                                 if let Err(e) = handle_text(text, &sender).await {
@@ -177,9 +279,18 @@ async fn run_ws(
                                 }
                             }
                         }
-                        Ok(Some(Err(e))) => { tracing::warn!(target:"plugins", name="servo-ws-fetcher", error=?e, "websocket error"); break; }
-                        Ok(None) => { tracing::warn!(target:"plugins", name="servo-ws-fetcher", "websocket stream ended"); break; }
-                        Err(_) => { tracing::warn!(target:"plugins", name="servo-ws-fetcher", "websocket idle timeout"); break; }
+                        Ok(Some(Err(e))) => {
+                            tracing::warn!(target:"plugins", name = "servo-ws-fetcher", error=?e, "websocket error");
+                            break;
+                        }
+                        Ok(None) => {
+                            tracing::warn!(target:"plugins", name = "servo-ws-fetcher", "websocket stream ended");
+                            break;
+                        }
+                        Err(_) => {
+                            tracing::warn!(target:"plugins", name = "servo-ws-fetcher", "websocket idle timeout");
+                            break;
+                        }
                     }
                 }
             }
@@ -187,8 +298,11 @@ async fn run_ws(
                 tracing::warn!(target:"plugins", name="servo-ws-fetcher", attempt=attempts, error=?e, "connect failed");
             }
         }
-        if attempts >= max_attempts { tracing::error!(target:"plugins", name="servo-ws-fetcher", "max reconnect attempts reached"); break; }
-        tokio::select!{
+        if attempts >= max_attempts {
+            tracing::error!(target:"plugins", name="servo-ws-fetcher", "max reconnect attempts reached");
+            break;
+        }
+        tokio::select! {
             _ = cancel.cancelled() => break,
             _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
         }
@@ -209,7 +323,8 @@ async fn handle_text(
             }
         }
         Ok(ServoWsMessage::IncomingBundle(txs)) => {
-            let decoded: Vec<_> = txs.into_iter()
+            let decoded: Vec<_> = txs
+                .into_iter()
                 .filter_map(|t| {
                     let raw = t.raw_unsigned_tx.clone();
                     let sender = t.sender();
@@ -240,7 +355,10 @@ async fn handle_text(
             // Convert to internal txs with fake blobs for now
             let txs: Vec<TransactionSignedEcRecoveredWithBlobs> = raw_signed_txs
                 .into_iter()
-                .filter_map(|raw| TransactionSignedEcRecoveredWithBlobs::decode_enveloped_with_fake_blobs(raw).ok())
+                .filter_map(|raw| {
+                    TransactionSignedEcRecoveredWithBlobs::decode_enveloped_with_fake_blobs(raw)
+                        .ok()
+                })
                 .collect();
             if !txs.is_empty() {
                 let mut bundle = Bundle {
@@ -280,11 +398,15 @@ fn try_decode_unsigned_tx(
     if let Ok(tx) = TxEip1559::decode(&mut &payload[..]) {
         let reth_tx: reth::primitives::Transaction = tx.into();
         let signed = dummy_signer.sign_tx(reth_tx)?;
-        Ok(TransactionSignedEcRecoveredWithBlobs::new_for_testing(signed))
+        Ok(TransactionSignedEcRecoveredWithBlobs::new_for_testing(
+            signed,
+        ))
     } else if let Ok(tx) = TxLegacy::decode(&mut &payload[..]) {
         let tx = reth::primitives::Transaction::from(tx);
         let signed = dummy_signer.sign_tx(tx)?;
-        Ok(TransactionSignedEcRecoveredWithBlobs::new_for_testing(signed))
+        Ok(TransactionSignedEcRecoveredWithBlobs::new_for_testing(
+            signed,
+        ))
     } else {
         eyre::bail!("Unsupported tx format")
     }

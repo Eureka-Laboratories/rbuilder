@@ -52,11 +52,47 @@ use std::{
     time::Duration,
 };
 use time::OffsetDateTime;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::plugin::PluginRegistry;
+
+static SLOT_CTX_TX: std::sync::OnceLock<
+    std::sync::Mutex<
+        broadcast::Sender<(
+            crate::building::BlockBuildingContext,
+            std::time::Duration,
+            MevBoostSlotData,
+        )>,
+    >,
+> = std::sync::OnceLock::new();
+
+pub fn slot_context_publisher() -> Option<
+    broadcast::Sender<(
+        crate::building::BlockBuildingContext,
+        std::time::Duration,
+        MevBoostSlotData,
+    )>,
+> {
+    SLOT_CTX_TX
+        .get_or_init(|| {
+            let (tx, _rx) = broadcast::channel(64);
+            std::sync::Mutex::new(tx)
+        })
+        .lock()
+        .ok()
+        .map(|tx| tx.clone())
+}
+
+pub fn subscribe_slot_context() -> broadcast::Receiver<(
+    crate::building::BlockBuildingContext,
+    std::time::Duration,
+    MevBoostSlotData,
+)> {
+    let tx = slot_context_publisher().expect("slot context tx");
+    tx.subscribe()
+}
 
 #[derive(Debug, Clone)]
 pub struct TimingsConfig {
@@ -177,12 +213,8 @@ where
 
         let mut plugin_registry = PluginRegistry::new();
         // Register built-in SERVO plugins
-        plugin_registry.register_bid_feed_hook(Arc::new(
-            crate::plugins::servo_nng::ServoNngBidFeedPlugin::from_env(),
-        ));
-        let servo_ws_plugin = Arc::new(
-            crate::plugins::servo_ws_fetcher::ServoWsFetcherPlugin::from_plugins_config(),
-        );
+        let servo_ws_plugin =
+            Arc::new(crate::plugins::servo_ws_fetcher::ServoWsFetcherPlugin::from_plugins_config());
         plugin_registry.register_order_input_hook(servo_ws_plugin.clone());
         plugin_registry.register_rpc_hook(servo_ws_plugin.clone());
 
@@ -359,6 +391,14 @@ where
                     .collect(),
             ) {
                 mark_building_started(block_ctx.timestamp());
+                // Publish slot/block context to plugin listeners
+                if let Some(tx) = slot_context_publisher() {
+                    let _ = tx.send((
+                        block_ctx.clone(),
+                        time_until_slot_end.try_into().unwrap_or_default(),
+                        payload.clone(),
+                    ));
+                }
                 builder_pool.start_block_building(
                     payload,
                     block_ctx,

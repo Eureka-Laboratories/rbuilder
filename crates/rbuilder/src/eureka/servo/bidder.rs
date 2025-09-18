@@ -12,7 +12,7 @@ use crate::live_builder::block_output::bidding::interfaces::{
     Bid, BidMaker, BiddingService, BiddingServiceWinControl, BlockBidWithStatsObs, SlotBlockId,
 };
 
-use crate::eureka::servo::servo_bid_coordinator::ServoBidCoordinator;
+use crate::eureka::servo::servo_bid_coordinator::{self, ServoBidCoordinator};
 
 #[derive(Debug, Default)]
 pub struct ServoBiddingService {
@@ -25,9 +25,12 @@ impl ServoBiddingService {
     ) -> Self {
         // default 0.005 ETH margin
         let margin = U256::from(5_000_000_000_000_000u64);
-        Self {
+        let svc = Self {
             coordinator: ServoBidCoordinator::new(margin),
-        }
+        };
+        // Expose globally so HTTP bidder can read competition via shared coordinator
+        servo_bid_coordinator::set_global(Arc::new(svc.coordinator.clone()));
+        svc
     }
 }
 
