@@ -436,9 +436,9 @@ impl LiveBuilderConfig for Config {
             .is_some()
         {
             let coord = std::sync::Arc::new(
-                crate::eureka::servo::servo_bid_coordinator::ServoBidCoordinator::new(
-                    U256::from(5_000_000_000_000_000u64),
-                ),
+                crate::eureka::servo::servo_bid_coordinator::ServoBidCoordinator::new(U256::from(
+                    5_000_000_000_000_000u64,
+                )),
             );
             crate::eureka::servo::servo_bid_coordinator::set_global(coord);
         }
@@ -450,11 +450,12 @@ impl LiveBuilderConfig for Config {
                     .as_ref()
                     .map(|s| parse_ether(s))
                     .unwrap_or(Ok(U256::ZERO))?;
-                let bidding_service: Arc<dyn BiddingService> = Arc::new(TrueBlockValueBiddingService::new(
-                    &landed_blocks,
-                    slot_delta_to_start_bidding_ms,
-                    subsidy,
-                ));
+                let bidding_service: Arc<dyn BiddingService> =
+                    Arc::new(TrueBlockValueBiddingService::new(
+                        &landed_blocks,
+                        slot_delta_to_start_bidding_ms,
+                        subsidy,
+                    ));
                 Ok::<Arc<dyn BiddingService>, eyre::Report>(bidding_service)
             })
                 as Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn BiddingService>>> + Send>>
