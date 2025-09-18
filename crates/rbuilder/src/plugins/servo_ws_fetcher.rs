@@ -117,16 +117,11 @@ impl OrderInputHook for ServoWsFetcherPlugin {
                     Ok(b) => b,
                     Err(_) => return,
                 };
-                let staking_secret = match secp256k1::SecretKey::from_slice(&sk_bytes) {
+                let staking_signer = match alloy_signer_local::PrivateKeySigner::from_slice(&sk_bytes) {
                     Ok(s) => s,
                     Err(_) => return,
                 };
-                let staker_address = match crate::utils::Signer::try_from_secret(
-                    alloy_primitives::B256::from_slice(&sk_bytes),
-                ) {
-                    Ok(s) => s.address,
-                    Err(_) => return,
-                };
+                let staker_address = staking_signer.address();
                 let client = match crate::eureka::servo::servo_http_client::ServoHttpClient::new(
                     token,
                     base,
@@ -178,7 +173,7 @@ impl OrderInputHook for ServoWsFetcherPlugin {
                     client,
                     stake,
                     token,
-                    staking_secret,
+                    staking_signer,
                     staker_address,
                     coordinator,
                     rx,
