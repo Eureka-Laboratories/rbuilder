@@ -20,18 +20,29 @@ impl ServoBidCoordinator {
 
     pub fn update_competition_bid(&self, block: u64, slot: u64, value: U256) {
         let mut map = self.latest.write().unwrap();
-        let e = map.entry((block, slot)).or_insert(U256::ZERO);
-        if value > *e {
-            *e = value;
+        let prev = map.get(&(block, slot)).copied().unwrap_or_default();
+        if value > prev {
+            map.insert((block, slot), value);
+            tracing::debug!(
+                block,
+                slot,
+                value = %value,
+                "SERVO: updated competition bid snapshot"
+            );
         }
     }
 
     pub fn latest_bid(&self, block: u64, slot: u64) -> Option<U256> {
-        self.latest.read().unwrap().get(&(block, slot)).copied()
+        let val = self.latest.read().unwrap().get(&(block, slot)).copied();
+        if let Some(v) = val { tracing::trace!(block, slot, value = %v, "SERVO: latest competition bid"); }
+        val
     }
 
     pub fn clear_slot_cache(&self, block: u64, slot: u64) {
-        self.latest.write().unwrap().remove(&(block, slot));
+        let removed = self.latest.write().unwrap().remove(&(block, slot));
+        if removed.is_some() {
+            tracing::debug!(block, slot, "SERVO: cleared per-slot competition cache");
+        }
     }
 
     /// Minimal evaluation: decide to bid when base+servo_total >= competition + margin
@@ -41,13 +52,21 @@ impl ServoBidCoordinator {
         servo_total_value: U256,
         competition: Option<U256>,
     ) -> bool {
-        match competition {
-            Some(c) => {
-                base_block_value.saturating_add(servo_total_value)
-                    >= c.saturating_add(self.min_outbid_margin)
-            }
+        let should = match competition {
+            Some(c) => base_block_value
+                .saturating_add(servo_total_value)
+                >= c.saturating_add(self.min_outbid_margin),
             None => false,
-        }
+        };
+        tracing::debug!(
+            base_block_value = %base_block_value,
+            servo_total_value = %servo_total_value,
+            competition = %competition.unwrap_or_default(),
+            min_outbid_margin = %self.min_outbid_margin,
+            should,
+            "SERVO: evaluation against competition"
+        );
+        should
     }
 }
 

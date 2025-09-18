@@ -9130,6 +9130,7 @@ dependencies = [
  "ethereum-consensus",
  "ethereum_ssz 0.9.0",
  "ethereum_ssz_derive",
+ "ethers-core",
  "exponential-backoff",
  "eyre",
  "flate2",

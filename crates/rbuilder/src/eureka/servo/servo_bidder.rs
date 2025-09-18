@@ -131,6 +131,7 @@ impl ServoBidder {
                             // just continue to wait for the next message
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            info!(target="plugins", name="servo-http-bidder", "Block context receiver closed");
                             break;
                         }
                     }
@@ -157,9 +158,11 @@ impl ServoBidder {
         // Read competition for this (block, slot)
         let competition = self.coordinator.latest_bid(block, slot);
         if competition.is_none() {
+            debug!(target="plugins", name="servo-http-bidder", block, slot, "No competition available for this slot");
             return Ok(());
         }
         let competition = competition.unwrap();
+        debug!(target="plugins", name="servo-http-bidder", block, slot, competition = %competition, "Competition snapshot");
 
         // Compute max payment based on policy
         let ratio_n = (self.cfg.max_payment_ratio * 1e9f64) as u64; // 1e9 fixed point
@@ -168,6 +171,7 @@ impl ServoBidder {
             max_payment = max_payment.min(cap);
         }
         if max_payment < self.cfg.min_payment_wei {
+            debug!(target="plugins", name="servo-http-bidder", block, slot, max_payment = %max_payment, min = %self.cfg.min_payment_wei, "Computed max payment below min threshold; skipping");
             return Ok(());
         }
 
@@ -175,6 +179,7 @@ impl ServoBidder {
         {
             let guard = self.last_payment_by_slot.lock().await;
             if guard.get(&(block, slot)).copied().unwrap_or_default() >= max_payment {
+                debug!(target="plugins", name="servo-http-bidder", block, slot, max_payment = %max_payment, "Skipping duplicate-or-smaller payment for this slot");
                 return Ok(());
             }
         }
@@ -244,7 +249,7 @@ impl ServoBidder {
             "maxPayment": format!("0x{:x}", max_payment),
             "commitment": new_commitment,
         });
-        debug!(target="plugins", name="servo-http-bidder", slot=slot, block=block, max_payment=?max_payment, "Submitting SERVO bid");
+        debug!(target="plugins", name="servo-http-bidder", slot=slot, block=block, max_payment=%max_payment, "Submitting SERVO bid");
         let _ = self.client.bid(&bid_payload).await?;
 
         // Update local PCS snapshot
