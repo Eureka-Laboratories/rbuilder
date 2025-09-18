@@ -430,41 +430,32 @@ impl LiveBuilderConfig for Config {
             self.slot_delta_to_start_bidding_ms
                 .unwrap_or(DEFAULT_SLOT_DELTA_TO_START_BIDDING_MS),
         );
-        // Create the bidding service factory
+        // If [servo] section exists, create a global coordinator used by the HTTP bidder
+        if crate::plugins::config::load_default_plugins_config()
+            .and_then(|c| c.servo)
+            .is_some()
+        {
+            let coord = std::sync::Arc::new(
+                crate::eureka::servo::servo_bid_coordinator::ServoBidCoordinator::new(
+                    U256::from(5_000_000_000_000_000u64),
+                ),
+            );
+            crate::eureka::servo::servo_bid_coordinator::set_global(coord);
+        }
+        // Create the bidding service factory (TBV always enabled)
         let bidding_service_factory = |landed_blocks: &[LandedBlockInfo]| {
             let landed_blocks = landed_blocks.to_vec();
             Box::pin(async move {
-                let servo_present = crate::plugins::config::load_default_plugins_config()
-                    .and_then(|c| c.servo)
-                    .is_some();
-                if servo_present {
-                    let subsidy = subsidy
-                        .as_ref()
-                        .map(|s| parse_ether(s))
-                        .unwrap_or(Ok(U256::ZERO))?;
-                    let tbv: Arc<dyn BiddingService> = Arc::new(TrueBlockValueBiddingService::new(
-                        &landed_blocks,
-                        slot_delta_to_start_bidding_ms,
-                        subsidy,
-                    ));
-                    let servo: Arc<dyn BiddingService> = Arc::new(
-                        crate::eureka::servo::bidder::ServoBiddingService::new(&landed_blocks),
-                    );
-                    let mux = crate::eureka::servo::multiplex_bidding_service::MultiplexBiddingService::new(tbv, servo);
-                    Ok::<Arc<dyn BiddingService>, eyre::Report>(Arc::new(mux))
-                } else {
-                    let subsidy = subsidy
-                        .as_ref()
-                        .map(|s| parse_ether(s))
-                        .unwrap_or(Ok(U256::ZERO))?;
-                    let bidding_service: Arc<dyn BiddingService> =
-                        Arc::new(TrueBlockValueBiddingService::new(
-                            &landed_blocks,
-                            slot_delta_to_start_bidding_ms,
-                            subsidy,
-                        ));
-                    Ok(bidding_service)
-                }
+                let subsidy = subsidy
+                    .as_ref()
+                    .map(|s| parse_ether(s))
+                    .unwrap_or(Ok(U256::ZERO))?;
+                let bidding_service: Arc<dyn BiddingService> = Arc::new(TrueBlockValueBiddingService::new(
+                    &landed_blocks,
+                    slot_delta_to_start_bidding_ms,
+                    subsidy,
+                ));
+                Ok::<Arc<dyn BiddingService>, eyre::Report>(bidding_service)
             })
                 as Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn BiddingService>>> + Send>>
         };
@@ -1022,11 +1013,26 @@ where
 
     // NNG endpoint comes from core L1Config only
     if let Some(endpoint) = l1_config.scraped_bids_publisher_url.clone() {
-        let bidding_service_bids_obs = Arc::new(ScrapedBids2BlockBidWithStatsObs::new(
+        let tbv_obs = Arc::new(ScrapedBids2BlockBidWithStatsObs::new(
             bidding_service.clone(),
         ));
+        // Composite observer: forwards to TBV and updates SERVO coordinator if present
+        struct CompositeObs {
+            inner: Arc<dyn bid_scraper::bid_scraper_client::ScrapedBidsObs + Send + Sync>,
+        }
+        impl bid_scraper::bid_scraper_client::ScrapedBidsObs for CompositeObs {
+            fn update_new_bid(&self, bid: bid_scraper::types::BlockBid) {
+                // forward to TBV observer
+                self.inner.update_new_bid(bid.clone());
+                // update SERVO coordinator if configured
+                if let Some(coord) = crate::eureka::servo::servo_bid_coordinator::global() {
+                    coord.update_competition_bid(bid.block_number, bid.slot_number, bid.value);
+                }
+            }
+        }
+        let composite = Arc::new(CompositeObs { inner: tbv_obs });
         tokio::spawn(run_nng_subscriber_with_retries(
-            bidding_service_bids_obs,
+            composite,
             cancellation_token.clone(),
             endpoint,
             Duration::from_secs(BID_SOURCE_TIMEOUT_SECS),
