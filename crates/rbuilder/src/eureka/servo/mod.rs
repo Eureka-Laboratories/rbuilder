@@ -1,5 +1,3 @@
-pub mod bidder;
-pub mod enriching_service;
 pub mod erc20_contract;
 pub mod servo_bid_coordinator;
 pub mod servo_bidder;

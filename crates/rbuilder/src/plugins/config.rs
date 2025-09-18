@@ -5,7 +5,6 @@ use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PluginsConfig {
-    // If [servo] section is missing, SERVO is considered disabled
     pub servo: Option<ServoPluginConfig>,
 }
 
