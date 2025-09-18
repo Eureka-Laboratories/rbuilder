@@ -49,6 +49,7 @@ pub struct ServoBidder {
     coordinator: Arc<ServoBidCoordinator>,
     ctx_rx: broadcast::Receiver<BlockCtxEvent>,
     last_payment_by_slot: Arc<Mutex<HashMap<(u64, u64), U256>>>,
+    slot_spent_base: Arc<Mutex<Option<U256>>>,
     cfg: BidderConfig,
     // EIP-712 domain params
     chain_id: u64,
@@ -76,6 +77,7 @@ impl ServoBidder {
             coordinator,
             ctx_rx,
             last_payment_by_slot: Arc::new(Mutex::new(HashMap::new())),
+            slot_spent_base: Arc::new(Mutex::new(None)),
             cfg: cfg.unwrap_or_default(),
             chain_id,
         }
@@ -125,6 +127,18 @@ impl ServoBidder {
                             let block = ctx.2.block();
                             let slot = ctx.2.slot();
                             self.last_payment_by_slot.lock().await.remove(&(block, slot));
+                            // Try to fetch channel state to record per-slot base
+                            match self.client.get_payment_channel_state().await {
+                                Ok(state) => {
+                                    let base = state.latest_commitment.stake_spent_amount;
+                                    *self.slot_spent_base.lock().await = Some(base);
+                                    debug!(target="plugins", name="servo-http-bidder", slot=slot, block=block, base=%base, "SERVO: set slot_spent_base at slot start");
+                                }
+                                Err(err) => {
+                                    warn!(target="plugins", name="servo-http-bidder", error=?err, "SERVO: failed to fetch payment channel state at slot start; disabling committed adjustment this slot");
+                                    *self.slot_spent_base.lock().await = None;
+                                }
+                            }
                             latest_ctx = Some(ctx);
                             debug!(target="plugins", name="servo-http-bidder", slot=slot, block=block, "new slot context received");
                         }
@@ -159,7 +173,13 @@ impl ServoBidder {
         // Read competition for this (block, slot)
         let competition = self.coordinator.latest_bid(block, slot);
         if competition.is_none() {
-            debug!(target="plugins", name="servo-http-bidder", block, slot, "No competition available for this slot");
+            debug!(
+                target = "plugins",
+                name = "servo-http-bidder",
+                block,
+                slot,
+                "No competition available for this slot"
+            );
             return Ok(());
         }
         let competition = competition.unwrap();
@@ -189,6 +209,24 @@ impl ServoBidder {
         let latest = &pcs.latest_commitment;
         let new_spent = latest.stake_spent_amount + max_payment;
         let new_nonce = latest.stake_commitment_nonce + U256::from(1);
+        // Safety check: ensure on-chain staked covers new_spent
+        let on_chain_staked = self
+            .stake
+            .get_staked_amount(self.staker_address)
+            .await
+            .unwrap_or_default();
+        if new_spent > on_chain_staked {
+            warn!(target="plugins", name="servo-http-bidder", on_chain_staked=%on_chain_staked, needed=%new_spent, "Insufficient stake; skipping SERVO bid this slot");
+            return Ok(());
+        }
+        // Log current allowance against stake contract (spender = stake contract)
+        if let Ok(allow) = self
+            .token
+            .allowance(self.staker_address, self.stake.address)
+            .await
+        {
+            debug!(target="plugins", name="servo-http-bidder", allowance=%allow, spender=%format!("{:#x}", self.stake.address), "Current ERC20 allowance");
+        }
         let new_hash = self
             .stake
             .get_stake_commitment_hash(
@@ -260,7 +298,8 @@ impl ServoBidder {
     fn eip712_domain_separator(&self, verifying_contract: Address) -> B256 {
         // EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)
         let domain_type_hash = keccak256(
-            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)".as_bytes(),
+            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                .as_bytes(),
         );
         let name_hash = keccak256("SERVO".as_bytes());
         let version_hash = keccak256(b"1");

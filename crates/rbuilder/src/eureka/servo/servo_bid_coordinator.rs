@@ -34,7 +34,9 @@ impl ServoBidCoordinator {
 
     pub fn latest_bid(&self, block: u64, slot: u64) -> Option<U256> {
         let val = self.latest.read().unwrap().get(&(block, slot)).copied();
-        if let Some(v) = val { tracing::trace!(block, slot, value = %v, "SERVO: latest competition bid"); }
+        if let Some(v) = val {
+            tracing::trace!(block, slot, value = %v, "SERVO: latest competition bid");
+        }
         val
     }
 
@@ -53,9 +55,10 @@ impl ServoBidCoordinator {
         competition: Option<U256>,
     ) -> bool {
         let should = match competition {
-            Some(c) => base_block_value
-                .saturating_add(servo_total_value)
-                >= c.saturating_add(self.min_outbid_margin),
+            Some(c) => {
+                base_block_value.saturating_add(servo_total_value)
+                    >= c.saturating_add(self.min_outbid_margin)
+            }
             None => false,
         };
         tracing::debug!(

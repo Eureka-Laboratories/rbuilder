@@ -117,10 +117,11 @@ impl OrderInputHook for ServoWsFetcherPlugin {
                     Ok(b) => b,
                     Err(_) => return,
                 };
-                let staking_signer = match alloy_signer_local::PrivateKeySigner::from_slice(&sk_bytes) {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
+                let staking_signer =
+                    match alloy_signer_local::PrivateKeySigner::from_slice(&sk_bytes) {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
                 let staker_address = staking_signer.address();
                 let client = match crate::eureka::servo::servo_http_client::ServoHttpClient::new(
                     token,
