@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use alloy_primitives::{hex, Address, U256};
+use alloy_primitives::{hex, keccak256, Address, B256, U256};
 use alloy_provider::RootProvider;
 use serde_json::json;
 use tokio::sync::{broadcast, Mutex};
@@ -49,6 +49,8 @@ pub struct ServoBidder {
     ctx_rx: broadcast::Receiver<BlockCtxEvent>,
     last_payment_by_slot: Arc<Mutex<HashMap<(u64, u64), U256>>>,
     cfg: BidderConfig,
+    // EIP-712 domain params
+    chain_id: u64,
 }
 
 impl ServoBidder {
@@ -61,6 +63,7 @@ impl ServoBidder {
         staker_address: Address,
         coordinator: Arc<ServoBidCoordinator>,
         ctx_rx: broadcast::Receiver<BlockCtxEvent>,
+        chain_id: u64,
         cfg: Option<BidderConfig>,
     ) -> Self {
         Self {
@@ -73,6 +76,7 @@ impl ServoBidder {
             ctx_rx,
             last_payment_by_slot: Arc::new(Mutex::new(HashMap::new())),
             cfg: cfg.unwrap_or_default(),
+            chain_id,
         }
     }
 
@@ -177,26 +181,48 @@ impl ServoBidder {
 
         // Build new commitment hash using contract helper
         let latest = &pcs.latest_commitment;
+        let new_spent = latest.stake_spent_amount + max_payment;
+        let new_nonce = latest.stake_commitment_nonce + U256::from(1);
         let new_hash = self
             .stake
             .get_stake_commitment_hash(
                 latest.staker_address,
                 latest.stake_channel_nonce,
-                latest.stake_commitment_nonce + U256::from(1),
+                new_nonce,
                 latest.latest_commitment_hash,
-                latest.stake_spent_amount + max_payment,
+                new_spent,
             )
             .await?;
 
-        // Sign preimage hash directly (placeholder; depends on contract requirements)
+        // Build EIP-712 typed data hash for StakeCommitment and sign it
+        let domain_separator = self.eip712_domain_separator(self.stake.address);
+        let message_hash = Self::stake_commitment_message_hash(
+            latest.staker_address,
+            latest.stake_channel_nonce,
+            new_nonce,
+            latest.latest_commitment_hash,
+            new_hash,
+            new_spent,
+        );
+        let mut prefixd = [0u8; 2 + 32 + 32];
+        prefixd[0] = 0x19;
+        prefixd[1] = 0x01;
+        prefixd[2..34].copy_from_slice(domain_separator.as_slice());
+        prefixd[34..].copy_from_slice(message_hash.as_slice());
+        let digest = keccak256(prefixd);
+
         let secp = secp256k1::Secp256k1::new();
-        let msg = secp256k1::Message::from_digest(*new_hash);
+        let msg = secp256k1::Message::from_digest_slice(digest.as_slice())
+            .expect("digest is 32 bytes");
         let sk = &self.staking_secret;
-        let sig = secp.sign_ecdsa(&msg, sk);
-        let rsig = sig.serialize_compact();
+        let rsig = secp
+            .sign_ecdsa_recoverable(&msg, sk)
+            .serialize_compact();
+        let (rec_id, sig_bytes64) = rsig;
         let mut sig_bytes = [0u8; 65];
-        sig_bytes[..64].copy_from_slice(&rsig[..]);
-        sig_bytes[64] = 27; // placeholder 'v'
+        sig_bytes[..64].copy_from_slice(&sig_bytes64[..]);
+        let v: u8 = i32::from(rec_id) as u8; // 0 or 1
+        sig_bytes[64] = v + 27; // Ethereum recovery id
         let staker_signature = format!("0x{}", hex::encode(sig_bytes));
 
         // Prepare commitment payload
@@ -205,9 +231,9 @@ impl ServoBidder {
             "latestCommitmentHash": format!("0x{:x}", new_hash),
             "previousCommitmentHash": format!("0x{:x}", latest.latest_commitment_hash),
             "stakeChannelNonce": format!("0x{:x}", latest.stake_channel_nonce),
-            "stakeCommitmentNonce": format!("0x{:x}", latest.stake_commitment_nonce + U256::from(1)),
+            "stakeCommitmentNonce": format!("0x{:x}", new_nonce),
             "stakeNotarySignature": null,
-            "stakeSpentAmount": format!("0x{:x}", latest.stake_spent_amount + max_payment),
+            "stakeSpentAmount": format!("0x{:x}", new_spent),
             "stakerAddress": format!("{:#x}", latest.staker_address),
             "stakerSignature": staker_signature,
         });
@@ -223,12 +249,67 @@ impl ServoBidder {
 
         // Update local PCS snapshot
         pcs.latest_commitment.latest_commitment_hash = new_hash;
-        pcs.latest_commitment.stake_commitment_nonce += U256::from(1);
-        pcs.latest_commitment.stake_spent_amount += max_payment;
+        pcs.latest_commitment.stake_commitment_nonce = new_nonce;
+        pcs.latest_commitment.stake_spent_amount = new_spent;
         {
             let mut guard = self.last_payment_by_slot.lock().await;
             guard.insert((block, slot), max_payment);
         }
         Ok(())
+    }
+
+    fn eip712_domain_separator(&self, verifying_contract: Address) -> B256 {
+        // Compute type hash at runtime to avoid const hex dependency
+        let domain_type_hash = keccak256(
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+        );
+        // Use ServoStake as the domain name and version 1 to mirror ebuilder
+        let name_hash = keccak256("ServoStake".as_bytes());
+        let version_hash = keccak256(b"1");
+        let mut enc = [0u8; 32 * 5];
+        enc[0..32].copy_from_slice(domain_type_hash.as_slice());
+        enc[32..64].copy_from_slice(name_hash.as_slice());
+        enc[64..96].copy_from_slice(version_hash.as_slice());
+        // chainId
+        let chain_bytes = B256::from(U256::from(self.chain_id));
+        enc[96..128].copy_from_slice(chain_bytes.as_slice());
+        // verifyingContract (address left-padded)
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[12..].copy_from_slice(verifying_contract.as_slice());
+        enc[128..160].copy_from_slice(&addr_bytes);
+        keccak256(enc)
+    }
+
+    fn stake_commitment_message_hash(
+        staker_address: Address,
+        stake_channel_nonce: U256,
+        stake_commitment_nonce: U256,
+        previous_commitment_hash: B256,
+        latest_commitment_hash: B256,
+        stake_spent_amount: U256,
+    ) -> B256 {
+        // Compute type hash at runtime
+        let type_hash = keccak256(b"StakeCommitment(address stakerAddress,uint256 stakeChannelNonce,uint256 stakeCommitmentNonce,bytes32 previousCommitmentHash,bytes32 latestCommitmentHash,uint256 stakeSpentAmount)");
+        let mut enc = [0u8; 32 * 7];
+        // typeHash
+        enc[0..32].copy_from_slice(type_hash.as_slice());
+        // stakerAddress
+        let mut addr = [0u8; 32];
+        addr[12..].copy_from_slice(staker_address.as_slice());
+        enc[32..64].copy_from_slice(&addr);
+        // stakeChannelNonce
+        let scn = B256::from(stake_channel_nonce);
+        enc[64..96].copy_from_slice(scn.as_slice());
+        // stakeCommitmentNonce
+        let sn = B256::from(stake_commitment_nonce);
+        enc[96..128].copy_from_slice(sn.as_slice());
+        // previousCommitmentHash
+        enc[128..160].copy_from_slice(previous_commitment_hash.as_slice());
+        // latestCommitmentHash
+        enc[160..192].copy_from_slice(latest_commitment_hash.as_slice());
+        // stakeSpentAmount
+        let spent = B256::from(stake_spent_amount);
+        enc[192..224].copy_from_slice(spent.as_slice());
+        keccak256(enc)
     }
 }

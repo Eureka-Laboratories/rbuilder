@@ -1,7 +1,6 @@
 pub mod bidder;
 pub mod enriching_service;
 pub mod erc20_contract;
-pub mod multiplex_bidding_service;
 pub mod servo_bid_coordinator;
 pub mod servo_bidder;
 pub mod servo_http_client;

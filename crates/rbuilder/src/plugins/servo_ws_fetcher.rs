@@ -182,6 +182,7 @@ impl OrderInputHook for ServoWsFetcherPlugin {
                     staker_address,
                     coordinator,
                     rx,
+                    info.chain_id,
                     None,
                 );
                 bidder.start(cancel_bidder.clone());
